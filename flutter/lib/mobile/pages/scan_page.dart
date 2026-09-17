@@ -156,7 +156,7 @@ class _ScanPageState extends State<ScanPage> {
     try {
       final sc = ServerConfig.decode(data.substring(7));
       Timer(Duration(milliseconds: 60), () {
-        showServerSettingsWithValue(sc, gFFI.dialogManager, null);
+        showServerSettingsWithValue(sc, gFFI.dialogManager);
       });
     } catch (e) {
       showToast('Invalid QR code');

@@ -15,15 +15,14 @@ use hbb_common::{
 };
 use serde::Serialize;
 use serde_json::json;
-#[cfg(target_os = "windows")]
-use std::io::{Error as IoError, ErrorKind as IoErrorKind};
+
 use std::{
     collections::{HashMap, HashSet},
     ffi::CString,
     os::raw::{c_char, c_int, c_void},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, RwLock,
     },
 };
@@ -51,7 +50,7 @@ lazy_static::lazy_static! {
 
 #[cfg(target_os = "windows")]
 lazy_static::lazy_static! {
-    pub static ref TEXTURE_RGBA_RENDERER_PLUGIN: Result<Library, LibError> = load_plugin_in_app_path("texture_rgba_renderer_plugin.dll");
+    pub static ref TEXTURE_RGBA_RENDERER_PLUGIN: Result<Library, LibError> = Library::open("texture_rgba_renderer_plugin.dll");
 }
 
 #[cfg(target_os = "linux")]
@@ -66,37 +65,7 @@ lazy_static::lazy_static! {
 
 #[cfg(target_os = "windows")]
 lazy_static::lazy_static! {
-    pub static ref TEXTURE_GPU_RENDERER_PLUGIN: Result<Library, LibError> = load_plugin_in_app_path("flutter_gpu_texture_renderer_plugin.dll");
-}
-
-// Move this function into `src/platform/windows.rs` if there're more calls to load plugins.
-// Load dll with full path.
-#[cfg(target_os = "windows")]
-fn load_plugin_in_app_path(dll_name: &str) -> Result<Library, LibError> {
-    match std::env::current_exe() {
-        Ok(exe_file) => {
-            if let Some(cur_dir) = exe_file.parent() {
-                let full_path = cur_dir.join(dll_name);
-                if !full_path.exists() {
-                    Err(LibError::OpeningLibraryError(IoError::new(
-                        IoErrorKind::NotFound,
-                        format!("{} not found", dll_name),
-                    )))
-                } else {
-                    Library::open(full_path)
-                }
-            } else {
-                Err(LibError::OpeningLibraryError(IoError::new(
-                    IoErrorKind::Other,
-                    format!(
-                        "Invalid exe parent for {}",
-                        exe_file.to_string_lossy().as_ref()
-                    ),
-                )))
-            }
-        }
-        Err(e) => Err(LibError::OpeningLibraryError(e)),
-    }
+    pub static ref TEXTURE_GPU_RENDERER_PLUGIN: Result<Library, LibError> = Library::open("flutter_gpu_texture_renderer_plugin.dll");
 }
 
 /// FFI for rustdesk core's main entry.
@@ -111,7 +80,6 @@ pub extern "C" fn rustdesk_core_main() -> bool {
         #[cfg(target_os = "macos")]
         std::process::exit(0);
     }
-    #[cfg(not(target_os = "macos"))]
     false
 }
 
@@ -134,12 +102,6 @@ pub extern "C" fn rustdesk_core_main_args(args_len: *mut c_int) -> *mut *mut c_c
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     return std::ptr::null_mut() as _;
-}
-
-#[cfg(windows)]
-#[no_mangle]
-pub extern "C" fn rustdesk_is_disable_installation() -> c_int {
-    hbb_common::config::is_disable_installation() as c_int
 }
 
 // https://gist.github.com/iskakaushik/1c5b8aa75c77479c33c4320913eebef6
@@ -225,6 +187,8 @@ pub struct FlutterHandler {
     session_handlers: Arc<RwLock<HashMap<SessionID, SessionHandler>>>,
     display_rgbas: Arc<RwLock<HashMap<usize, RgbaData>>>,
     peer_info: Arc<RwLock<PeerInfo>>,
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    hooks: Arc<RwLock<HashMap<String, SessionHook>>>,
     use_texture_render: Arc<AtomicBool>,
 }
 
@@ -234,6 +198,8 @@ impl Default for FlutterHandler {
             session_handlers: Default::default(),
             display_rgbas: Default::default(),
             peer_info: Default::default(),
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            hooks: Default::default(),
             use_texture_render: Arc::new(
                 AtomicBool::new(crate::ui_interface::use_texture_render()),
             ),
@@ -547,45 +513,17 @@ impl FlutterHandler {
     where
         V: Sized + Serialize + Clone,
     {
-        self.push_event_(name, event, &[], excludes);
-    }
-
-    pub fn push_event_to<V>(&self, name: &str, event: &[(&str, V)], include: &[&SessionID])
-    where
-        V: Sized + Serialize + Clone,
-    {
-        self.push_event_(name, event, include, &[]);
-    }
-
-    pub fn push_event_<V>(
-        &self,
-        name: &str,
-        event: &[(&str, V)],
-        includes: &[&SessionID],
-        excludes: &[&SessionID],
-    ) where
-        V: Sized + Serialize + Clone,
-    {
         let mut h: HashMap<&str, serde_json::Value> =
             event.iter().map(|(k, v)| (*k, json!(*v))).collect();
         debug_assert!(h.get("name").is_none());
         h.insert("name", json!(name));
         let out = serde_json::ser::to_string(&h).unwrap_or("".to_owned());
         for (sid, session) in self.session_handlers.read().unwrap().iter() {
-            let mut push = false;
-            if includes.is_empty() {
-                if !excludes.contains(&sid) {
-                    push = true;
-                }
-            } else {
-                if includes.contains(&sid) {
-                    push = true;
-                }
+            if excludes.contains(&sid) {
+                continue;
             }
-            if push {
-                if let Some(stream) = &session.event_stream {
-                    stream.add(EventToUI::Event(out.clone()));
-                }
+            if let Some(stream) = &session.event_stream {
+                stream.add(EventToUI::Event(out.clone()));
             }
         }
     }
@@ -611,25 +549,34 @@ impl FlutterHandler {
                 h.insert("original_width", original_resolution.width);
                 h.insert("original_height", original_resolution.height);
             }
-            // Don't convert scale (x 100) to i32 directly.
-            // (d.scale * 100.0f64) as i32 may produces inaccuracies.
-            //
-            // Example: GNOME Wayland with Fractional Scaling enabled:
-            // - Physical resolution: 2560x1600
-            // - Logical resolution: 1074x1065
-            // - Scale factor: 150%
-            // Passing physical dimensions and scale factor prevents accurate logical resolution calculation
-            // since 2560/1.5 = 1706.666... (rounded to 1706.67) and 1600/1.5 = 1066.666... (rounded to 1066.67)
-            // h.insert("scale", (d.scale * 100.0f64) as i32);
-
-            // Send scaled_width for accurate logical scale calculation.
-            if d.scale > 0.0 {
-                let scaled_width = (d.width as f64 / d.scale).round() as i32;
-                h.insert("scaled_width", scaled_width);
-            }
+            h.insert("scale", (d.scale * 100.0f64) as i32);
             msg_vec.push(h);
         }
         serde_json::ser::to_string(&msg_vec).unwrap_or("".to_owned())
+    }
+
+    #[cfg(feature = "plugin_framework")]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    pub(crate) fn add_session_hook(&self, key: String, hook: SessionHook) -> bool {
+        let mut hooks = self.hooks.write().unwrap();
+        if hooks.contains_key(&key) {
+            // Already has the hook with this key.
+            return false;
+        }
+        let _ = hooks.insert(key, hook);
+        true
+    }
+
+    #[cfg(feature = "plugin_framework")]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    pub(crate) fn remove_session_hook(&self, key: &String) -> bool {
+        let mut hooks = self.hooks.write().unwrap();
+        if !hooks.contains_key(key) {
+            // The hook with this key does not found.
+            return false;
+        }
+        let _ = hooks.remove(key);
+        true
     }
 
     pub fn update_use_texture_render(&self) {
@@ -672,7 +619,7 @@ impl InvokeUiSession for FlutterHandler {
     }
 
     /// unused in flutter, use switch_display or set_peer_info
-    fn set_display(&self, _x: i32, _y: i32, _w: i32, _h: i32, _cursor_embedded: bool, _scale: f64) {}
+    fn set_display(&self, _x: i32, _y: i32, _w: i32, _h: i32, _cursor_embedded: bool) {}
 
     fn update_privacy_mode(&self) {
         self.push_event::<&str>("update_privacy_mode", &[], &[]);
@@ -710,13 +657,12 @@ impl InvokeUiSession for FlutterHandler {
         );
     }
 
-    fn set_connection_type(&self, is_secured: bool, direct: bool, stream_type: &str) {
+    fn set_connection_type(&self, is_secured: bool, direct: bool) {
         self.push_event(
             "connection_ready",
             &[
                 ("secure", &is_secured.to_string()),
                 ("direct", &direct.to_string()),
-                ("stream_type", &stream_type.to_string()),
             ],
             &[],
         );
@@ -749,7 +695,7 @@ impl InvokeUiSession for FlutterHandler {
     // unused in flutter
     fn clear_all_jobs(&self) {}
 
-    fn load_last_job(&self, _cnt: i32, job_json: &str, _auto_start: bool) {
+    fn load_last_job(&self, _cnt: i32, job_json: &str) {
         self.push_event("load_last_job", &[("value", job_json)], &[]);
     }
 
@@ -1082,90 +1028,20 @@ impl InvokeUiSession for FlutterHandler {
     fn update_record_status(&self, start: bool) {
         self.push_event("record_status", &[("start", &start.to_string())], &[]);
     }
-
-    fn printer_request(&self, id: i32, path: String) {
-        self.push_event(
-            "printer_request",
-            &[("id", json!(id)), ("path", json!(path))],
-            &[],
-        );
-    }
-
-    fn handle_screenshot_resp(&self, sid: String, msg: String) {
-        match SessionID::from_str(&sid) {
-            Ok(sid) => self.push_event_to("screenshot", &[("msg", json!(msg))], &[&sid]),
-            Err(e) => {
-                // Unreachable!
-                log::error!("Failed to parse sid \"{}\", {}", sid, e);
-            }
-        }
-    }
-
-    fn handle_terminal_response(&self, response: TerminalResponse) {
-        use hbb_common::message_proto::terminal_response::Union;
-
-        match response.union {
-            Some(Union::Opened(opened)) => {
-                let mut event_data: Vec<(&str, serde_json::Value)> = vec![
-                    ("type", json!("opened")),
-                    ("terminal_id", json!(opened.terminal_id)),
-                    ("success", json!(opened.success)),
-                    ("message", json!(&opened.message)),
-                    ("pid", json!(opened.pid)),
-                    ("service_id", json!(&opened.service_id)),
-                    (
-                        "replay_terminal_output",
-                        json!(opened.replay_terminal_output),
-                    ),
-                ];
-                if !opened.persistent_sessions.is_empty() {
-                    event_data.push(("persistent_sessions", json!(opened.persistent_sessions)));
-                }
-                self.push_event_("terminal_response", &event_data, &[], &[]);
-            }
-            Some(Union::Data(data)) => {
-                // Decompress data if needed
-                let output_data = if data.compressed {
-                    hbb_common::compress::decompress(&data.data)
-                } else {
-                    data.data.to_vec()
-                };
-
-                let encoded = crate::encode64(&output_data);
-                let event_data: Vec<(&str, serde_json::Value)> = vec![
-                    ("type", json!("data")),
-                    ("terminal_id", json!(data.terminal_id)),
-                    ("data", json!(&encoded)),
-                ];
-                self.push_event_("terminal_response", &event_data, &[], &[]);
-            }
-            Some(Union::Closed(closed)) => {
-                let event_data: Vec<(&str, serde_json::Value)> = vec![
-                    ("type", json!("closed")),
-                    ("terminal_id", json!(closed.terminal_id)),
-                    ("exit_code", json!(closed.exit_code)),
-                ];
-                self.push_event_("terminal_response", &event_data, &[], &[]);
-            }
-            Some(Union::Error(error)) => {
-                let event_data: Vec<(&str, serde_json::Value)> = vec![
-                    ("type", json!("error")),
-                    ("terminal_id", json!(error.terminal_id)),
-                    ("message", json!(&error.message)),
-                ];
-                self.push_event_("terminal_response", &event_data, &[], &[]);
-            }
-            None => {}
-            Some(_) => {
-                log::warn!("Unhandled terminal response type");
-            }
-        }
-    }
 }
 
 impl FlutterHandler {
     #[inline]
     fn on_rgba_soft_render(&self, display: usize, rgba: &mut scrap::ImageRgb) {
+        // Give a chance for plugins or etc to hook a rgba data.
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        for (key, hook) in self.hooks.read().unwrap().iter() {
+            match hook {
+                SessionHook::OnSessionRgba(cb) => {
+                    cb(key.to_owned(), rgba);
+                }
+            }
+        }
         // If the current rgba is not fetched by flutter, i.e., is valid.
         // We give up sending a new event to flutter.
         let mut rgba_write_lock = self.display_rgbas.write().unwrap();
@@ -1242,14 +1118,8 @@ pub fn session_add_existed(
     peer_id: String,
     session_id: SessionID,
     displays: Vec<i32>,
-    is_view_camera: bool,
 ) -> ResultType<()> {
-    let conn_type = if is_view_camera {
-        ConnType::VIEW_CAMERA
-    } else {
-        ConnType::DEFAULT_CONN
-    };
-    sessions::insert_peer_session_id(peer_id, conn_type, session_id, displays);
+    sessions::insert_peer_session_id(peer_id, ConnType::DEFAULT_CONN, session_id, displays);
     Ok(())
 }
 
@@ -1259,16 +1129,13 @@ pub fn session_add_existed(
 ///
 /// * `id` - The identifier of the remote session with prefix. Regex: [\w]*[\_]*[\d]+
 /// * `is_file_transfer` - If the session is used for file transfer.
-/// * `is_view_camera` - If the session is used for view camera.
 /// * `is_port_forward` - If the session is used for port forward.
 pub fn session_add(
     session_id: &SessionID,
     id: &str,
     is_file_transfer: bool,
-    is_view_camera: bool,
     is_port_forward: bool,
     is_rdp: bool,
-    is_terminal: bool,
     switch_uuid: &str,
     force_relay: bool,
     password: String,
@@ -1277,10 +1144,6 @@ pub fn session_add(
 ) -> ResultType<FlutterSession> {
     let conn_type = if is_file_transfer {
         ConnType::FILE_TRANSFER
-    } else if is_view_camera {
-        ConnType::VIEW_CAMERA
-    } else if is_terminal {
-        ConnType::TERMINAL
     } else if is_port_forward {
         if is_rdp {
             ConnType::RDP
@@ -1316,7 +1179,6 @@ pub fn session_add(
         server_keyboard_enabled: Arc::new(RwLock::new(true)),
         server_file_transfer_enabled: Arc::new(RwLock::new(true)),
         server_clipboard_enabled: Arc::new(RwLock::new(true)),
-        reconnect_count: Arc::new(AtomicUsize::new(0)),
         ..Default::default()
     };
 
@@ -1406,35 +1268,15 @@ fn try_send_close_event(event_stream: &Option<StreamSink<EventToUI>>) {
 pub fn update_text_clipboard_required() {
     let is_required = sessions::get_sessions()
         .iter()
-        .any(|s| s.is_default() && s.is_text_clipboard_required());
+        .any(|s| s.is_text_clipboard_required());
     #[cfg(target_os = "android")]
     let _ = scrap::android::ffi::call_clipboard_manager_enable_client_clipboard(is_required);
     Client::set_is_text_clipboard_required(is_required);
 }
 
-#[cfg(feature = "unix-file-copy-paste")]
-pub fn update_file_clipboard_required() {
-    let is_required = sessions::get_sessions()
-        .iter()
-        .any(|s| s.is_default() && s.is_file_clipboard_required());
-    Client::set_is_file_clipboard_required(is_required);
-}
-
 #[cfg(not(target_os = "ios"))]
-pub fn send_clipboard_msg(msg: Message, _is_file: bool) {
+pub fn send_text_clipboard_msg(msg: Message) {
     for s in sessions::get_sessions() {
-        if !s.is_default() {
-            continue;
-        }
-        #[cfg(feature = "unix-file-copy-paste")]
-        if _is_file {
-            if crate::is_support_file_copy_paste_num(s.lc.read().unwrap().version)
-                && s.is_file_clipboard_required()
-            {
-                s.send(Data::Message(msg.clone()));
-            }
-            continue;
-        }
         if s.is_text_clipboard_required() {
             // Check if the client supports multi clipboards
             if let Some(message::Union::MultiClipboards(multi_clipboards)) = &msg.union {
@@ -1552,8 +1394,20 @@ pub mod connection_manager {
         }
     }
 
+    #[inline]
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    fn start_listen_ipc() {
+    pub fn start_cm_no_ui() {
+        start_listen_ipc(false);
+    }
+
+    #[inline]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    fn start_listen_ipc_thread() {
+        start_listen_ipc(true);
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    fn start_listen_ipc(new_thread: bool) {
         use crate::ui_cm_interface::{start_ipc, ConnectionManager};
 
         #[cfg(target_os = "linux")]
@@ -1562,13 +1416,17 @@ pub mod connection_manager {
         let cm = ConnectionManager {
             ui_handler: FlutterHandler {},
         };
-        std::thread::spawn(move || start_ipc(cm));
+        if new_thread {
+            std::thread::spawn(move || start_ipc(cm));
+        } else {
+            start_ipc(cm);
+        }
     }
 
     #[inline]
     pub fn cm_init() {
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        start_listen_ipc();
+        start_listen_ipc_thread();
     }
 
     #[cfg(target_os = "android")]
@@ -1910,6 +1768,12 @@ pub fn session_on_waiting_for_image_dialog_show(session_id: SessionID) {
     }
 }
 
+/// Hooks for session.
+#[derive(Clone)]
+pub enum SessionHook {
+    OnSessionRgba(fn(String, &mut scrap::ImageRgb)),
+}
+
 #[inline]
 pub fn get_cur_session() -> Option<FlutterSession> {
     sessions::get_session_by_session_id(&*CUR_SESSION_ID.read().unwrap())
@@ -1950,7 +1814,7 @@ pub(super) fn session_update_virtual_display(session: &FlutterSession, index: i3
             let mut vdisplays = displays.split(',').collect::<Vec<_>>();
             let len = vdisplays.len();
             if index == 0 {
-                // 0 means we can't toggle the virtual display by index.
+                // 0 means we cann't toggle the virtual display by index.
                 vdisplays.remove(vdisplays.len() - 1);
             } else {
                 if let Some(i) = vdisplays.iter().position(|&x| x == index.to_string()) {
@@ -2066,69 +1930,7 @@ pub mod sessions {
                 None => {}
             }
         }
-        let s = SESSIONS.write().unwrap().remove(&remove_peer_key?);
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        update_session_count_to_server();
-        s
-    }
-
-    /// Close every client session, returning how many peer sessions were closed.
-    ///
-    /// Used when the UI is gone but the process keeps running, e.g. the Android
-    /// task is swiped away from recents while a foreground service keeps the
-    /// process alive. The orphaned `io_loop` would otherwise keep answering
-    /// `TestDelay`, so the peer never hits its inactivity timeout and the
-    /// session stays established with no way to close it.
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    pub fn close_all_sessions() -> usize {
-        // Release held keys before draining: the release path sends through
-        // `get_cur_session()`, which resolves against SESSIONS, so draining
-        // first would take TO_RELEASE and then silently drop every key-up,
-        // leaving the key stuck on the controlled side. A no-op when nothing
-        // is held.
-        crate::keyboard::release_remote_keys("map");
-        // Drain so the map lock is released before closing each session.
-        let sessions: Vec<FlutterSession> = SESSIONS
-            .write()
-            .unwrap()
-            .drain()
-            .map(|(_, session)| session)
-            .collect();
-        for session in sessions.iter() {
-            let session_ids: Vec<SessionID> = session
-                .ui_handler
-                .session_handlers
-                .read()
-                .unwrap()
-                .keys()
-                .cloned()
-                .collect();
-            for session_id in session_ids {
-                session.close_event_stream(session_id);
-            }
-            session.close();
-        }
-        sessions.len()
-    }
-
-    /// Check if removing a session by session_id would result in removing the entire peer.
-    ///
-    /// Returns:
-    /// - `true`: The session exists and removing it would leave the peer with no other sessions,
-    ///           so the entire peer would be removed (equivalent to `remove_session_by_session_id` returning `Some`)
-    /// - `false`: The session doesn't exist, or it exists but the peer has other sessions,
-    ///            so the peer would not be removed (equivalent to `remove_session_by_session_id` returning `None`)
-    #[inline]
-    pub fn would_remove_peer_by_session_id(id: &SessionID) -> bool {
-        for (_peer_key, s) in SESSIONS.read().unwrap().iter() {
-            let read_lock = s.ui_handler.session_handlers.read().unwrap();
-            if read_lock.contains_key(id) {
-                // Found the session, check if it's the only one for this peer
-                return read_lock.len() == 1;
-            }
-        }
-        // Session not found
-        false
+        SESSIONS.write().unwrap().remove(&remove_peer_key?)
     }
 
     fn check_remove_unused_displays(
@@ -2176,8 +1978,6 @@ pub mod sessions {
                     // This operation will also cause the peer to send a switch display message.
                     // The switch display message will contain `SupportedResolutions`, which is useful when changing resolutions.
                     s.switch_display(value[0]);
-                    // Reset the valid flag of the display.
-                    s.next_rgba(value[0] as usize);
 
                     if !is_desktop {
                         s.capture_displays(vec![], vec![], value);
@@ -2230,14 +2030,6 @@ pub mod sessions {
             .write()
             .unwrap()
             .insert(session_id, Default::default());
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        update_session_count_to_server();
-    }
-
-    #[inline]
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    fn update_session_count_to_server() {
-        crate::ipc::update_controlling_session_count(SESSIONS.read().unwrap().len()).ok();
     }
 
     #[inline]
@@ -2263,11 +2055,6 @@ pub mod sessions {
                 .write()
                 .unwrap()
                 .insert(session_id, h);
-            // If the session is a single display session, it may be a software rgba rendered display.
-            // If this is the second time the display is opened, the old valid flag may be true.
-            if displays.len() == 1 {
-                s.ui_handler.next_rgba(displays[0] as usize);
-            }
             true
         } else {
             false
@@ -2286,20 +2073,14 @@ pub mod sessions {
             *r#type == conn_type && s.session_handlers.read().unwrap().len() != 0
         })
     }
-
-    #[inline]
-    #[cfg(not(target_os = "ios"))]
-    pub fn has_connected_sessions_running(conn_type: ConnType) -> bool {
-        SESSIONS.read().unwrap().iter().any(|((_, r#type), s)| {
-            *r#type == conn_type
-                && s.session_handlers.read().unwrap().len() != 0
-                && s.connection_round_state.lock().unwrap().is_connected()
-        })
-    }
 }
 
 pub(super) mod async_tasks {
-    use hbb_common::{bail, tokio, ResultType};
+    use hbb_common::{
+        bail,
+        tokio::{self, select},
+        ResultType,
+    };
     use std::{
         collections::HashMap,
         sync::{

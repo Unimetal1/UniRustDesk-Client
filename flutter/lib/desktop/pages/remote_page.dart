@@ -3,9 +3,9 @@ import 'dart:async';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 
 import '../../consts.dart';
@@ -15,14 +15,12 @@ import '../../common.dart';
 import '../../common/widgets/dialog.dart';
 import '../../common/widgets/toolbar.dart';
 import '../../models/model.dart';
-import '../../models/input_model.dart';
 import '../../models/platform_model.dart';
 import '../../common/shared_state.dart';
 import '../../utils/image.dart';
 import '../widgets/remote_toolbar.dart';
 import '../widgets/kb_layout_type_chooser.dart';
 import '../widgets/tabbar_widget.dart';
-import 'macos_full_screen_focus_recovery.dart';
 
 import 'package:flutter_hbb/native/custom_cursor.dart'
     if (dart.library.html) 'package:flutter_hbb/web/custom_cursor.dart';
@@ -65,13 +63,6 @@ class RemotePage extends StatefulWidget {
 
   FFI get ffi => (_lastState.value! as _RemotePageState)._ffi;
 
-  void releaseMacOSInputForTabTransfer() {
-    if (!isMacOS) return;
-    // Release before removing the source tab. Its delayed disposal must not
-    // disable a native keyboard hook already acquired by the destination page.
-    (_lastState.value! as _RemotePageState)._releaseMacOSRemoteInput();
-  }
-
   @override
   State<RemotePage> createState() {
     final state = _RemotePageState(id);
@@ -81,45 +72,19 @@ class RemotePage extends StatefulWidget {
 }
 
 class _RemotePageState extends State<RemotePage>
-    with
-        AutomaticKeepAliveClientMixin,
-        MultiWindowListener,
-        WidgetsBindingObserver,
-        TickerProviderStateMixin {
+    with AutomaticKeepAliveClientMixin, MultiWindowListener {
   Timer? _timer;
   String keyboardMode = "legacy";
   bool _isWindowBlur = false;
-  // Known macOS remote-input trade-offs (kept simple intentionally):
-  // 1. Dialogs rely on FocusNode loss plus middleBlocked, not mirrored dialog
-  //    state. Reproduce: activate remote input, open a dialog, then type.
-  // 2. Delayed fullscreen recovery can race a local-control focus change; no
-  //    owner state is added. Reproduce: focus the toolbar during a Space switch.
-  // 3. Input-source switching releases native input without updating this
-  //    page's cache. Reproduce: switch sources, then type before and after
-  //    clicking the remote image; the click reasserts input.
-  // These latches compensate for out-of-order macOS focus events. Treat them
-  // as coupled when changing a transition or _syncMacOSKeyboardGrab().
-  AppLifecycleState? _macOSLifecycleState;
-  bool _macOSLocalFocusLost = false;
-  bool _macOSInputActive = false;
-  bool _macOSInputSuppressed = false;
-  final _macOSFullScreenFocusRecovery = MacOSFullScreenFocusRecovery();
-  bool _macOSExplicitFocusRequestPending = false;
-  StreamSubscription<DesktopTabState>? _tabStateSubscription;
   final _cursorOverImage = false.obs;
   late RxBool _showRemoteCursor;
   late RxBool _zoomCursor;
   late RxBool _remoteCursorMoved;
   late RxBool _keyboardEnabled;
-  final _uniqueKey = UniqueKey();
 
   var _blockableOverlayState = BlockableOverlayState();
 
   final FocusNode _rawKeyFocusNode = FocusNode(debugLabel: "rawkeyFocusNode");
-
-  // Debounce timer for pointer lock center updates during window events.
-  // Uses kDefaultPointerLockCenterThrottleMs from consts.dart for the duration.
-  Timer? _pointerLockCenterDebounceTimer;
 
   // We need `_instanceIdOnEnterOrLeaveImage4Toolbar` together with `_onEnterOrLeaveImage4Toolbar`
   // to identify the toolbar instance and its callback function.
@@ -127,9 +92,6 @@ class _RemotePageState extends State<RemotePage>
   Function(bool)? _onEnterOrLeaveImage4Toolbar;
 
   late FFI _ffi;
-  Worker? _waylandKeyboardModeWorker;
-  bool _waylandKeyboardModeNormalized = false;
-  bool _waylandKeyboardModeNormalizing = false;
 
   SessionID get sessionId => _ffi.sessionId;
 
@@ -148,22 +110,13 @@ class _RemotePageState extends State<RemotePage>
   void initState() {
     super.initState();
     _ffi = FFI(widget.sessionId);
-    if (isMacOS) {
-      // SchedulerBinding.instance.lifecycleState is null in the first connection in a new window.
-      _macOSLifecycleState = SchedulerBinding.instance.lifecycleState;
-      WidgetsBinding.instance.addObserver(this);
-      _tabStateSubscription =
-          widget.tabController?.state.listen(_onMacOSTabStateChanged);
-    }
     Get.put<FFI>(_ffi, tag: widget.id);
     _ffi.imageModel.addCallbackOnFirstImage((String peerId) {
-      _ffi.canvasModel.activateLocalCursor();
       showKBLayoutTypeChooserIfNeeded(
           _ffi.ffiModel.pi.platform, _ffi.dialogManager);
       _ffi.recordingModel
           .updateStatus(bind.sessionGetIsRecording(sessionId: _ffi.sessionId));
     });
-    _ffi.canvasModel.initializeEdgeScrollFallback(this);
     _ffi.start(
       widget.id,
       password: widget.password,
@@ -179,9 +132,12 @@ class _RemotePageState extends State<RemotePage>
       _ffi.dialogManager
           .showLoading(translate('Connecting...'), onCancel: closeConnection);
     });
-    WakelockManager.enable(_uniqueKey);
+    if (!isLinux) {
+      WakelockPlus.enable();
+    }
 
     _ffi.ffiModel.updateEventListener(sessionId, widget.id);
+    if (!isWeb) bind.pluginSyncUi(syncTo: kAppTypeDesktopRemote);
     _ffi.qualityMonitorModel.checkShowQualityMonitor(sessionId);
     _ffi.dialogManager.loadMobileActionsOverlayVisible();
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -209,259 +165,6 @@ class _RemotePageState extends State<RemotePage>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       widget.tabController?.onSelected?.call(widget.id);
     });
-
-    // Register callback to cancel debounce timer when relative mouse mode is disabled
-    _ffi.inputModel.onRelativeMouseModeDisabled =
-        _cancelPointerLockCenterDebounceTimer;
-
-    _waylandKeyboardModeWorker = ever(_ffi.ffiModel.pi.isSet, (bool isSet) {
-      if (isSet) {
-        unawaited(_normalizeWaylandKeyboardModeIfNeeded());
-      }
-    });
-    if (_ffi.ffiModel.pi.isSet.value) {
-      unawaited(_normalizeWaylandKeyboardModeIfNeeded());
-    }
-  }
-
-  Future<void> _normalizeWaylandKeyboardModeIfNeeded() async {
-    if (!mounted ||
-        _waylandKeyboardModeNormalized ||
-        _waylandKeyboardModeNormalizing) {
-      return;
-    }
-    _waylandKeyboardModeNormalizing = true;
-    try {
-      final pi = _ffi.ffiModel.pi;
-      if (pi.platform != kPeerPlatformLinux || !pi.isWayland) return;
-      final mapSupported = bind.sessionIsKeyboardModeSupported(
-          sessionId: sessionId, mode: kKeyMapMode);
-      if (!mapSupported) return;
-      final current = await bind.sessionGetKeyboardMode(sessionId: sessionId);
-      if (!mounted) return;
-      if (current == kKeyMapMode) {
-        _waylandKeyboardModeNormalized = true;
-        return;
-      }
-      await bind.sessionSetKeyboardMode(
-          sessionId: sessionId, value: kKeyMapMode);
-      if (!mounted) return;
-      await _ffi.inputModel.updateKeyboardMode();
-      if (!mounted) return;
-      _waylandKeyboardModeNormalized = true;
-    } catch (e, st) {
-      debugPrint('Failed to normalize Wayland keyboard mode: $e');
-      debugPrintStack(stackTrace: st);
-    } finally {
-      _waylandKeyboardModeNormalizing = false;
-    }
-  }
-
-  /// Cancel the pointer lock center debounce timer
-  void _cancelPointerLockCenterDebounceTimer() {
-    _pointerLockCenterDebounceTimer?.cancel();
-    _pointerLockCenterDebounceTimer = null;
-  }
-
-  bool get _isSelectedTab {
-    final controller = widget.tabController;
-    if (controller == null) return true;
-    final tabState = controller.state.value;
-    final selected = tabState.selected;
-    return selected >= 0 &&
-        selected < tabState.tabs.length &&
-        tabState.tabs[selected].key == widget.id;
-  }
-
-  // Every Windows requestFocus() must pass this, or a blocking dialog or an
-  // inactive tab could hand remote input to this page.
-  bool get _windowsCanFocusRemoteInput =>
-      _isSelectedTab && _blockableOverlayState.middleBlocked.isFalse;
-
-  bool get _isMacOSKeyboardContextActive {
-    return stateGlobal.isFocused.value && !_isWindowBlur && _isSelectedTab;
-  }
-
-  void _onMacOSTabStateChanged(DesktopTabState _) {
-    if (!_isSelectedTab) {
-      _macOSFullScreenFocusRecovery.cancel();
-      _syncMacOSKeyboardGrab();
-      return;
-    }
-    // Tab listeners run synchronously. Defer the selected page so the previous
-    // page releases first; a late leave from it can disable the new session.
-    scheduleMicrotask(() {
-      if (mounted) {
-        _syncMacOSKeyboardGrab(reassert: true);
-      }
-    });
-  }
-
-  void _releaseMacOSRemoteInput() {
-    _macOSFullScreenFocusRecovery.cancel();
-    _macOSExplicitFocusRequestPending = false;
-    _macOSInputSuppressed = true;
-    _macOSLocalFocusLost = true;
-    _ffi.inputModel.enterOrLeave(false);
-    _macOSInputActive = false;
-    _rawKeyFocusNode.unfocus();
-  }
-
-  void _onMacOSFocusChange() {
-    // requestFocus() notifies later; only a recorded explicit request may clear
-    // the local-focus-loss latch.
-    if (_rawKeyFocusNode.hasPrimaryFocus) {
-      final explicitRequest = _macOSExplicitFocusRequestPending;
-      _macOSExplicitFocusRequestPending = false;
-      if (explicitRequest && _isMacOSKeyboardContextActive) {
-        _macOSLocalFocusLost = false;
-      }
-      _syncMacOSKeyboardGrab(allowInactiveLifecycle: explicitRequest);
-    } else {
-      if (_macOSInputActive) {
-        _ffi.inputModel.enterOrLeave(false);
-        _macOSInputActive = false;
-      }
-      if (_isMacOSKeyboardContextActive) {
-        _macOSLocalFocusLost = true;
-      }
-    }
-  }
-
-  // 1. Sync the keyboard grab state with the current context.
-  // 2. Call enterOrLeave() to update the input state in the FFI layer.
-  // 3. Request or unfocus the raw key focus node based on the current context.
-  // Flutter focus and native input are separate; native input activates only
-  // after the FocusNode has primary focus.
-  void _syncMacOSKeyboardGrab({
-    bool reassert = false,
-    bool allowInactiveLifecycle = false,
-  }) {
-    if (!isMacOS) return;
-    // A secondary engine may stay hidden while its window is visible, so
-    // explicit pointer/fullscreen recovery must bypass the global lifecycle.
-    final lifecycleAllowsInput = allowInactiveLifecycle ||
-        _macOSLifecycleState == null ||
-        _macOSLifecycleState == AppLifecycleState.resumed;
-    // Input stays pointer-gated except for focused fullscreen recovery, which
-    // compensates when macOS omits PointerEnter during a Space switch.
-    final shouldFocus = lifecycleAllowsInput &&
-        _isMacOSKeyboardContextActive &&
-        !_macOSInputSuppressed &&
-        _blockableOverlayState.middleBlocked.isFalse &&
-        _cursorOverImage.value &&
-        !_macOSLocalFocusLost;
-    final hasFocus = _rawKeyFocusNode.hasPrimaryFocus;
-    final shouldActivateInput = shouldFocus && hasFocus;
-
-    if (shouldActivateInput != _macOSInputActive ||
-        (shouldActivateInput && reassert)) {
-      _ffi.inputModel.enterOrLeave(shouldActivateInput);
-    }
-    _macOSInputActive = shouldActivateInput;
-
-    if (!shouldFocus) {
-      _macOSExplicitFocusRequestPending = false;
-      if (hasFocus) _rawKeyFocusNode.unfocus();
-    } else if (!hasFocus) {
-      _macOSExplicitFocusRequestPending = allowInactiveLifecycle;
-      _rawKeyFocusNode.requestFocus();
-    } else {
-      _macOSExplicitFocusRequestPending = false;
-    }
-  }
-
-  void _restoreMacOSKeyboardAfterFullScreen({
-    required int generation,
-    bool allowHiddenLifecycle = false,
-  }) {
-    // Fullscreen callbacks preserve recovery while hidden. Native window focus
-    // may bypass a stale hidden lifecycle for the newly visible Space.
-    if (!_macOSFullScreenFocusRecovery.isCurrent(generation) ||
-        (!allowHiddenLifecycle &&
-            _macOSLifecycleState == AppLifecycleState.hidden)) {
-      return;
-    }
-    final contextActive =
-        stateGlobal.isFocused.value && !_isWindowBlur && _isSelectedTab;
-    // macOS can focus a fullscreen Space without sending PointerEnter. Native
-    // window focus is authoritative here; a later blur cancels this generation
-    // before an off-screen window can restore input.
-    final shouldInferPointerInside = !_cursorOverImage.value &&
-        allowHiddenLifecycle &&
-        stateGlobal.fullscreen.isTrue &&
-        contextActive;
-    final canRestore = contextActive &&
-        _blockableOverlayState.middleBlocked.isFalse &&
-        (_cursorOverImage.value || shouldInferPointerInside);
-    if (!_macOSFullScreenFocusRecovery.consume(generation)) return;
-    if (!canRestore) {
-      // Consuming recovery here requires a later pointer/window/tab event.
-      return;
-    }
-    if (shouldInferPointerInside) {
-      _cursorOverImage.value = true;
-    }
-    _macOSLocalFocusLost = false;
-    stateGlobal.getInputSource(force: true);
-    _syncMacOSKeyboardGrab(reassert: true, allowInactiveLifecycle: true);
-  }
-
-  void _scheduleMacOSKeyboardAfterFullScreen({
-    required int generation,
-    bool allowHiddenLifecycle = false,
-  }) {
-    // Fullscreen can deliver FocusNode loss after its callback; wait for frame
-    // completion and then advance one event-loop turn before restoring.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      Timer.run(() {
-        if (mounted) {
-          _restoreMacOSKeyboardAfterFullScreen(
-            generation: generation,
-            allowHiddenLifecycle: allowHiddenLifecycle,
-          );
-        }
-      });
-    });
-    WidgetsBinding.instance.ensureVisualUpdate();
-  }
-
-  void _queueMacOSKeyboardAfterFullScreen({
-    bool allowHiddenLifecycle = false,
-  }) {
-    final generation = _macOSFullScreenFocusRecovery.queue();
-    if (_macOSLifecycleState == AppLifecycleState.paused ||
-        _macOSLifecycleState == AppLifecycleState.detached) {
-      _macOSFullScreenFocusRecovery.cancel();
-      return;
-    }
-    _scheduleMacOSKeyboardAfterFullScreen(
-      generation: generation,
-      allowHiddenLifecycle: allowHiddenLifecycle,
-    );
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    if (!isMacOS || _macOSLifecycleState == state) return;
-    _macOSLifecycleState = state;
-    if (state == AppLifecycleState.resumed) {
-      _syncMacOSKeyboardGrab(reassert: true);
-    } else if (_macOSInputActive) {
-      _ffi.inputModel.enterOrLeave(false);
-      _macOSInputActive = false;
-    }
-
-    final generation = _macOSFullScreenFocusRecovery.pendingGeneration;
-    if (generation == null) return;
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.resumed) {
-      _scheduleMacOSKeyboardAfterFullScreen(generation: generation);
-    } else if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
-      _macOSFullScreenFocusRecovery.cancel();
-    }
   }
 
   @override
@@ -469,80 +172,24 @@ class _RemotePageState extends State<RemotePage>
     super.onWindowBlur();
     // On windows, we use `focus` way to handle keyboard better.
     // Now on Linux, there's some rdev issues which will break the input.
-    // We disable the `focus` way for Linux temporarily.
-    if (isWindows || isMacOS) {
-      _isWindowBlur = true;
-    }
-    if (isMacOS) {
-      _macOSFullScreenFocusRecovery.cancel();
-      // A blur or Space switch may not emit PointerExit, so cursor state alone
-      // cannot prevent the old remote surface from reclaiming the keyboard.
-      _macOSLocalFocusLost = true;
-    }
+    // We disable the `focus` way for non-Windows temporarily.
     if (isWindows) {
+      _isWindowBlur = true;
       // unfocus the primary-focus when the whole window is lost focus,
       // and let OS to handle events instead.
       _rawKeyFocusNode.unfocus();
     }
     stateGlobal.isFocused.value = false;
-    _syncMacOSKeyboardGrab();
-
-    // When window loses focus, temporarily release relative mouse mode constraints
-    // to allow user to interact with other applications normally.
-    // The cursor will be re-hidden and re-centered when window regains focus.
-    if (_ffi.inputModel.relativeMouseMode.value) {
-      _ffi.inputModel.onWindowBlur();
-    }
   }
 
   @override
   void onWindowFocus() {
     super.onWindowFocus();
     // See [onWindowBlur].
-    if (isWindows || isMacOS) {
+    if (isWindows) {
       _isWindowBlur = false;
     }
-    if (isMacOS) stateGlobal.getInputSource(force: true);
     stateGlobal.isFocused.value = true;
-
-    // Normal macOS windows wait for PointerEnter or PointerDown. A focused
-    // fullscreen Space queues delayed recovery; if this window blurs again, the
-    // pending recovery is cancelled before native input can reactivate.
-    // Regression: switch directly between fullscreen remote Spaces without
-    // moving or clicking; only the newly focused session may receive input.
-    if (isMacOS &&
-        stateGlobal.fullscreen.isTrue &&
-        !_ffi.inputModel.relativeMouseMode.value) {
-      // Native window focus is authoritative when a secondary engine retains a
-      // stale hidden lifecycle state after its fullscreen Space becomes visible.
-      _queueMacOSKeyboardAfterFullScreen(allowHiddenLifecycle: true);
-    }
-
-    // Refocus without PointerEnter: the cursor already hovers the image when
-    // focus returns (Alt+Tab, taskbar), so enterView() never fires again.
-    if (isWindows &&
-        _cursorOverImage.value &&
-        _windowsCanFocusRemoteInput &&
-        !_rawKeyFocusNode.hasFocus) {
-      _rawKeyFocusNode.requestFocus();
-    }
-
-    // Restore relative mouse mode constraints when window regains focus.
-    if (_ffi.inputModel.relativeMouseMode.value) {
-      if (isMacOS) {
-        // Native relative mode retains pointer capture and does not emit
-        // PointerEnter after window focus returns. Restore both latches unless
-        // a local overlay still owns input.
-        if (_blockableOverlayState.middleBlocked.isFalse) {
-          _cursorOverImage.value = true;
-          _macOSLocalFocusLost = false;
-        }
-      } else if (!isWindows || _windowsCanFocusRemoteInput) {
-        _rawKeyFocusNode.requestFocus();
-      }
-      _ffi.inputModel.onWindowFocus();
-    }
-    _syncMacOSKeyboardGrab(reassert: true, allowInactiveLifecycle: true);
   }
 
   @override
@@ -553,66 +200,25 @@ class _RemotePageState extends State<RemotePage>
     if (isWindows) {
       _isWindowBlur = false;
     }
-    WakelockManager.enable(_uniqueKey);
-    // Update pointer lock center when window is restored
-    _updatePointerLockCenterIfNeeded();
+    if (!isLinux) {
+      WakelockPlus.enable();
+    }
   }
 
   // When the window is unminimized, onWindowMaximize or onWindowRestore can be called when the old state was maximized or not.
   @override
   void onWindowMaximize() {
     super.onWindowMaximize();
-    WakelockManager.enable(_uniqueKey);
-    // Update pointer lock center when window is maximized
-    _updatePointerLockCenterIfNeeded();
-  }
-
-  @override
-  void onWindowResize() {
-    super.onWindowResize();
-    // Update pointer lock center when window is resized
-    _updatePointerLockCenterIfNeeded();
-  }
-
-  @override
-  void onWindowMove() {
-    super.onWindowMove();
-    // Update pointer lock center when window is moved
-    _updatePointerLockCenterIfNeeded();
-  }
-
-  /// Update pointer lock center with debouncing to avoid excessive updates
-  /// during rapid window move/resize events.
-  void _updatePointerLockCenterIfNeeded() {
-    if (!_ffi.inputModel.relativeMouseMode.value) return;
-
-    // Cancel any pending update and schedule a new one (debounce pattern)
-    _pointerLockCenterDebounceTimer?.cancel();
-    _pointerLockCenterDebounceTimer = Timer(
-      const Duration(milliseconds: kDefaultPointerLockCenterThrottleMs),
-      () {
-        if (!mounted) return;
-        if (_ffi.inputModel.relativeMouseMode.value) {
-          _ffi.inputModel.updatePointerLockCenter();
-        }
-      },
-    );
+    if (!isLinux) {
+      WakelockPlus.enable();
+    }
   }
 
   @override
   void onWindowMinimize() {
     super.onWindowMinimize();
-    WakelockManager.disable(_uniqueKey);
-    if (isMacOS) {
-      _macOSFullScreenFocusRecovery.cancel();
-      _isWindowBlur = true;
-      _cursorOverImage.value = false;
-      stateGlobal.isFocused.value = false;
-      _syncMacOSKeyboardGrab();
-    }
-    // Release cursor constraints when minimized
-    if (_ffi.inputModel.relativeMouseMode.value) {
-      _ffi.inputModel.onWindowBlur();
+    if (!isLinux) {
+      WakelockPlus.disable();
     }
   }
 
@@ -621,7 +227,6 @@ class _RemotePageState extends State<RemotePage>
     super.onWindowEnterFullScreen();
     if (isMacOS) {
       stateGlobal.setFullscreen(true);
-      _queueMacOSKeyboardAfterFullScreen();
     }
   }
 
@@ -630,7 +235,6 @@ class _RemotePageState extends State<RemotePage>
     super.onWindowLeaveFullScreen();
     if (isMacOS) {
       stateGlobal.setFullscreen(false);
-      _queueMacOSKeyboardAfterFullScreen();
     }
   }
 
@@ -639,31 +243,11 @@ class _RemotePageState extends State<RemotePage>
     final closeSession = closeSessionOnDispose.remove(widget.id) ?? true;
 
     // https://github.com/flutter/flutter/issues/64935
-    if (isMacOS) {
-      // Tab moves release before transfer to avoid a late retained-session leave.
-      if (closeSession) {
-        _releaseMacOSRemoteInput();
-      }
-      _tabStateSubscription?.cancel();
-      WidgetsBinding.instance.removeObserver(this);
-    }
     super.dispose();
     debugPrint("REMOTE PAGE dispose session $sessionId ${widget.id}");
-
-    // Defensive cleanup: ensure host system-key propagation is reset even if
-    // MouseRegion.onExit never fired (e.g., tab closed while cursor inside).
-    if (!isWeb) bind.hostStopSystemKeyPropagate(stopped: true);
-
-    _pointerLockCenterDebounceTimer?.cancel();
-    _pointerLockCenterDebounceTimer = null;
-    _waylandKeyboardModeWorker?.dispose();
-    // Clear callback reference to prevent memory leaks and stale references
-    _ffi.inputModel.onRelativeMouseModeDisabled = null;
-    // Relative mouse mode cleanup is centralized in FFI.close(closeSession: ...).
     _ffi.textureModel.onRemotePageDispose(closeSession);
-    if (closeSession && !isMacOS) {
+    if (closeSession) {
       // ensure we leave this session, this is a double check
-      // enterOrLeave() is already called previously in _releaseMacOSRemoteInput() for macOS.
       _ffi.inputModel.enterOrLeave(false);
     }
     DesktopMultiWindow.removeListener(this);
@@ -671,9 +255,6 @@ class _RemotePageState extends State<RemotePage>
     _ffi.imageModel.disposeImage();
     _ffi.cursorModel.disposeImages();
     _rawKeyFocusNode.dispose();
-    if (closeSession) {
-      clearWaylandKeyboardPromptSuppressedForConnection(sessionId.toString());
-    }
     await _ffi.close(closeSession: closeSession);
     _timer?.cancel();
     _ffi.dialogManager.dismissAll();
@@ -681,7 +262,9 @@ class _RemotePageState extends State<RemotePage>
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
           overlays: SystemUiOverlay.values);
     }
-    WakelockManager.disable(_uniqueKey);
+    if (!isLinux) {
+      await WakelockPlus.disable();
+    }
     await Get.delete<FFI>(tag: widget.id);
     removeSharedStates(widget.id);
   }
@@ -738,8 +321,6 @@ class _RemotePageState extends State<RemotePage>
                       } else {
                         _ffi.inputModel.enterOrLeave(false);
                       }
-                    } else if (isMacOS) {
-                      _onMacOSFocusChange();
                     }
                   },
                   inputModel: _ffi.inputModel,
@@ -767,15 +348,10 @@ class _RemotePageState extends State<RemotePage>
                       }
                     }(),
               // Use Overlay to enable rebuild every time on menu button click.
-              // Hide toolbar when relative mouse mode is active to prevent
-              // cursor from escaping to toolbar area.
-              Obx(() => _ffi.inputModel.relativeMouseMode.value
-                  ? const Offstage()
-                  : _ffi.ffiModel.pi.isSet.isTrue
-                      ? Overlay(initialEntries: [
-                          OverlayEntry(builder: remoteToolbar)
-                        ])
-                      : remoteToolbar(context)),
+              _ffi.ffiModel.pi.isSet.isTrue
+                  ? Overlay(
+                      initialEntries: [OverlayEntry(builder: remoteToolbar)])
+                  : remoteToolbar(context),
               _ffi.ffiModel.pi.isSet.isFalse ? emptyOverlay() : Offstage(),
             ],
           ),
@@ -819,7 +395,7 @@ class _RemotePageState extends State<RemotePage>
     super.build(context);
     return WillPopScope(
         onWillPop: () async {
-          clientClose(sessionId, _ffi);
+          clientClose(sessionId, _ffi.dialogManager);
           return false;
         },
         child: MultiProvider(providers: [
@@ -832,8 +408,6 @@ class _RemotePageState extends State<RemotePage>
   }
 
   void enterView(PointerEnterEvent evt) {
-    _ffi.canvasModel.rearmEdgeScroll();
-
     _cursorOverImage.value = true;
     _firstEnterImage.value = true;
     if (_onEnterOrLeaveImage4Toolbar != null) {
@@ -843,22 +417,8 @@ class _RemotePageState extends State<RemotePage>
         //
       }
     }
-
     // See [onWindowBlur].
-    if (isMacOS) {
-      _macOSLocalFocusLost = false;
-      stateGlobal.getInputSource(force: true);
-      _syncMacOSKeyboardGrab(reassert: true, allowInactiveLifecycle: true);
-    } else if (isWindows) {
-      // Blur unfocuses this node and nothing restores it, so the keyboard stayed
-      // dead until a click. Focus only while the window is really active, or a
-      // background window would grab system keys. onFocusChange does enterOrLeave.
-      if (!_isWindowBlur &&
-          _windowsCanFocusRemoteInput &&
-          !_rawKeyFocusNode.hasFocus) {
-        _rawKeyFocusNode.requestFocus();
-      }
-    } else {
+    if (!isWindows) {
       if (!_rawKeyFocusNode.hasFocus) {
         _rawKeyFocusNode.requestFocus();
       }
@@ -867,8 +427,6 @@ class _RemotePageState extends State<RemotePage>
   }
 
   void leaveView(PointerExitEvent evt) {
-    _ffi.canvasModel.disableEdgeScroll();
-
     if (_ffi.ffiModel.keyboard) {
       _ffi.inputModel.tryMoveEdgeOnExit(evt.position);
     }
@@ -882,11 +440,8 @@ class _RemotePageState extends State<RemotePage>
         //
       }
     }
-
     // See [onWindowBlur].
-    if (isMacOS) {
-      _syncMacOSKeyboardGrab();
-    } else if (!isWindows) {
+    if (!isWindows) {
       _ffi.inputModel.enterOrLeave(false);
     }
   }
@@ -911,29 +466,17 @@ class _RemotePageState extends State<RemotePage>
       onEnter: onEnter,
       onExit: onExit,
       onPointerDown: (event) {
-        // A double check for blur status on Windows and macOS.
+        // A double check for blur status.
         // Note: If there's an `onPointerDown` event is triggered, `_isWindowBlur` is expected being false.
         // Sometimes the system does not send the necessary focus event to flutter. We should manually
         // handle this inconsistent status by setting `_isWindowBlur` to false. So we can
         // ensure the grab-key thread is running when our users are clicking the remote canvas.
-        if ((isWindows || isMacOS) && _isWindowBlur) {
+        if (_isWindowBlur) {
           debugPrint(
               "Unexpected status: onPointerDown is triggered while the remote window is in blur status");
           _isWindowBlur = false;
         }
-        if (isMacOS) {
-          // Regions without matching enter/exit callbacks cannot safely own
-          // keyboard state.
-          if (onEnter == null || onExit == null) return;
-          if (!stateGlobal.isFocused.value) {
-            stateGlobal.isFocused.value = true;
-          }
-          _cursorOverImage.value = true;
-          _macOSLocalFocusLost = false;
-          stateGlobal.getInputSource(force: true);
-          _syncMacOSKeyboardGrab(
-              reassert: !isInputSourceFlutter, allowInactiveLifecycle: true);
-        } else if (!_rawKeyFocusNode.hasFocus) {
+        if (!_rawKeyFocusNode.hasFocus) {
           _rawKeyFocusNode.requestFocus();
         }
       },
@@ -944,39 +487,33 @@ class _RemotePageState extends State<RemotePage>
 
   Widget getBodyForDesktop(BuildContext context) {
     var paints = <Widget>[
-      MouseRegion(
-        onEnter: (evt) {
-          if (!isWeb) bind.hostStopSystemKeyPropagate(stopped: false);
-        },
-        onExit: (evt) {
-          if (!isWeb) bind.hostStopSystemKeyPropagate(stopped: true);
-        },
-        child: _ViewStyleUpdater(
-          canvasModel: _ffi.canvasModel,
-          inputModel: _ffi.inputModel,
-          child: Builder(builder: (context) {
-            final peerDisplay = CurrentDisplayState.find(widget.id);
-            return Obx(
-              () => _ffi.ffiModel.pi.isSet.isFalse
-                  ? Container(color: Colors.transparent)
-                  : Obx(() {
-                      _ffi.textureModel.updateCurrentDisplay(peerDisplay.value);
-                      return ImagePaint(
-                        id: widget.id,
-                        zoomCursor: _zoomCursor,
-                        cursorOverImage: _cursorOverImage,
-                        keyboardEnabled: _keyboardEnabled,
-                        remoteCursorMoved: _remoteCursorMoved,
-                        listenerBuilder: (child) =>
-                            _buildRawTouchAndPointerRegion(
-                                child, enterView, leaveView),
-                        ffi: _ffi,
-                      );
-                    }),
-            );
-          }),
-        ),
-      )
+      MouseRegion(onEnter: (evt) {
+        if (!isWeb) bind.hostStopSystemKeyPropagate(stopped: false);
+      }, onExit: (evt) {
+        if (!isWeb) bind.hostStopSystemKeyPropagate(stopped: true);
+      }, child: LayoutBuilder(builder: (context, constraints) {
+        final c = Provider.of<CanvasModel>(context, listen: false);
+        Future.delayed(Duration.zero, () => c.updateViewStyle());
+        final peerDisplay = CurrentDisplayState.find(widget.id);
+        return Obx(
+          () => _ffi.ffiModel.pi.isSet.isFalse
+              ? Container(color: Colors.transparent)
+              : Obx(() {
+                  widget.toolbarState.initShow(sessionId);
+                  _ffi.textureModel.updateCurrentDisplay(peerDisplay.value);
+                  return ImagePaint(
+                    id: widget.id,
+                    zoomCursor: _zoomCursor,
+                    cursorOverImage: _cursorOverImage,
+                    keyboardEnabled: _keyboardEnabled,
+                    remoteCursorMoved: _remoteCursorMoved,
+                    listenerBuilder: (child) => _buildRawTouchAndPointerRegion(
+                        child, enterView, leaveView),
+                    ffi: _ffi,
+                  );
+                }),
+        );
+      }))
     ];
 
     if (!_ffi.canvasModel.cursorEmbedded) {
@@ -1003,63 +540,6 @@ class _RemotePageState extends State<RemotePage>
 
   @override
   bool get wantKeepAlive => true;
-}
-
-/// A widget that tracks the view size and updates CanvasModel.updateViewStyle()
-/// and InputModel.updateImageWidgetSize() only when size actually changes.
-/// This avoids scheduling post-frame callbacks on every LayoutBuilder rebuild.
-class _ViewStyleUpdater extends StatefulWidget {
-  final CanvasModel canvasModel;
-  final InputModel inputModel;
-  final Widget child;
-
-  const _ViewStyleUpdater({
-    Key? key,
-    required this.canvasModel,
-    required this.inputModel,
-    required this.child,
-  }) : super(key: key);
-
-  @override
-  State<_ViewStyleUpdater> createState() => _ViewStyleUpdaterState();
-}
-
-class _ViewStyleUpdaterState extends State<_ViewStyleUpdater> {
-  Size? _lastSize;
-  bool _callbackScheduled = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final maxWidth = constraints.maxWidth;
-        final maxHeight = constraints.maxHeight;
-        // Guard against infinite constraints (e.g., unconstrained ancestor).
-        if (!maxWidth.isFinite || !maxHeight.isFinite) {
-          return widget.child;
-        }
-        final newSize = Size(maxWidth, maxHeight);
-        if (_lastSize != newSize) {
-          _lastSize = newSize;
-          // Schedule the update for after the current frame to avoid setState during build.
-          // Use _callbackScheduled flag to prevent accumulating multiple callbacks
-          // when size changes rapidly before any callback executes.
-          if (!_callbackScheduled) {
-            _callbackScheduled = true;
-            SchedulerBinding.instance.addPostFrameCallback((_) {
-              _callbackScheduled = false;
-              final currentSize = _lastSize;
-              if (mounted && currentSize != null) {
-                widget.canvasModel.updateViewStyle();
-                widget.inputModel.updateImageWidgetSize(currentSize);
-              }
-            });
-          }
-        }
-        return widget.child;
-      },
-    );
-  }
 }
 
 class ImagePaint extends StatefulWidget {
@@ -1126,29 +606,26 @@ class _ImagePaintState extends State<ImagePaint> {
               cursor: cursorOverImage.isTrue
                   ? c.cursorEmbedded
                       ? SystemMouseCursors.none
-                      // Hide cursor when relative mouse mode is active
-                      : widget.ffi.inputModel.relativeMouseMode.value
-                          ? SystemMouseCursors.none
-                          : keyboardEnabled.isTrue
-                              ? (() {
-                                  if (remoteCursorMoved.isTrue) {
-                                    _lastRemoteCursorMoved = true;
-                                    return SystemMouseCursors.none;
-                                  } else {
-                                    if (_lastRemoteCursorMoved) {
-                                      _lastRemoteCursorMoved = false;
-                                      _firstEnterImage.value = true;
-                                    }
-                                    return _buildCustomCursor(
-                                        context, getCursorScale());
-                                  }
-                                }())
-                              : _buildDisabledCursor(context, getCursorScale())
+                      : keyboardEnabled.isTrue
+                          ? (() {
+                              if (remoteCursorMoved.isTrue) {
+                                _lastRemoteCursorMoved = true;
+                                return SystemMouseCursors.none;
+                              } else {
+                                if (_lastRemoteCursorMoved) {
+                                  _lastRemoteCursorMoved = false;
+                                  _firstEnterImage.value = true;
+                                }
+                                return _buildCustomCursor(
+                                    context, getCursorScale());
+                              }
+                            }())
+                          : _buildDisabledCursor(context, getCursorScale())
                   : MouseCursor.defer,
               onHover: (evt) {},
               child: child);
         });
-    if (c.imageOverflow.isTrue && c.scrollStyle != ScrollStyle.scrollauto) {
+    if (c.imageOverflow.isTrue && c.scrollStyle == ScrollStyle.scrollbar) {
       final paintWidth = c.getDisplayWidth() * s;
       final paintHeight = c.getDisplayHeight() * s;
       final paintSize = Size(paintWidth, paintHeight);
@@ -1203,20 +680,9 @@ class _ImagePaintState extends State<ImagePaint> {
 
   Widget _buildScrollAutoNonTextureRender(
       ImageModel m, CanvasModel c, double s) {
-    double sizeScale = s;
-    if (widget.ffi.ffiModel.isPeerLinux) {
-      final displays = widget.ffi.ffiModel.pi.getCurDisplays();
-      if (displays.isNotEmpty) {
-        sizeScale = s / displays[0].scale;
-      }
-    }
     return CustomPaint(
       size: Size(c.size.width, c.size.height),
-      painter: ImagePainter(
-          image: m.image,
-          x: c.x / sizeScale,
-          y: c.y / sizeScale,
-          scale: sizeScale),
+      painter: ImagePainter(image: m.image, x: c.x / s, y: c.y / s, scale: s),
     );
   }
 
@@ -1229,19 +695,17 @@ class _ImagePaintState extends State<ImagePaint> {
     if (rect == null) {
       return Container();
     }
-    final isPeerLinux = ffiModel.isPeerLinux;
     final curDisplay = ffiModel.pi.currentDisplay;
     for (var i = 0; i < displays.length; i++) {
       final textureId = widget.ffi.textureModel
           .getTextureId(curDisplay == kAllDisplayValue ? i : curDisplay);
       if (true) {
         // both "textureId.value != -1" and "true" seems ok
-        final sizeScale = isPeerLinux ? s / displays[i].scale : s;
         children.add(Positioned(
           left: (displays[i].x - rect.left) * s + offset.dx,
           top: (displays[i].y - rect.top) * s + offset.dy,
-          width: displays[i].width * sizeScale,
-          height: displays[i].height * sizeScale,
+          width: displays[i].width * s,
+          height: displays[i].height * s,
           child: Obx(() => Texture(
                 textureId: textureId.value,
                 filterQuality:

@@ -25,13 +25,13 @@ class PeerSortType {
   static const String remoteId = 'Remote ID';
   static const String remoteHost = 'Remote Host';
   static const String username = 'Username';
-  static const String status = 'Status';
+  // static const String status = 'Status';
 
   static List<String> values = [
     PeerSortType.remoteId,
     PeerSortType.remoteHost,
     PeerSortType.username,
-    PeerSortType.status
+    // PeerSortType.status
   ];
 }
 
@@ -71,12 +71,10 @@ class _PeersView extends StatefulWidget {
   final Peers peers;
   final PeerFilter? peerFilter;
   final PeerCardBuilder peerCardBuilder;
-  final PeerTabIndex peerTabIndex;
 
   const _PeersView(
       {required this.peers,
       required this.peerCardBuilder,
-      required this.peerTabIndex,
       this.peerFilter,
       Key? key})
       : super(key: key);
@@ -386,9 +384,9 @@ class _PeersViewState extends State<_PeersView>
           peers.sort((p1, p2) =>
               p1.username.toLowerCase().compareTo(p2.username.toLowerCase()));
           break;
-        case PeerSortType.status:
-          peers.sort((p1, p2) => p1.online ? -1 : 1);
-          break;
+        // case PeerSortType.status:
+        // peers.sort((p1, p2) => p1.online ? -1 : 1);
+        // break;
       }
     }
 
@@ -397,8 +395,8 @@ class _PeersViewState extends State<_PeersView>
       return peers;
     }
     searchText = searchText.toLowerCase();
-    final matches = await Future.wait(
-        peers.map((peer) => matchPeer(searchText, peer, widget.peerTabIndex)));
+    final matches =
+        await Future.wait(peers.map((peer) => matchPeer(searchText, peer)));
     final filteredList = List<Peer>.empty(growable: true);
     for (var i = 0; i < peers.length; i++) {
       if (matches[i]) {
@@ -443,10 +441,7 @@ abstract class BasePeersView extends StatelessWidget {
         break;
     }
     return _PeersView(
-        peers: peers,
-        peerFilter: peerFilter,
-        peerCardBuilder: peerCardBuilder,
-        peerTabIndex: peerTabIndex);
+        peers: peers, peerFilter: peerFilter, peerCardBuilder: peerCardBuilder);
   }
 }
 
@@ -506,7 +501,6 @@ class DiscoveredPeersView extends BasePeersView {
   Widget build(BuildContext context) {
     final widget = super.build(context);
     bind.mainLoadLanPeers();
-    bind.mainDiscover();
     return widget;
   }
 }
@@ -568,29 +562,14 @@ class MyGroupPeerView extends BasePeersView {
         );
 
   static bool filter(Peer peer) {
-    final model = gFFI.groupModel;
-    if (model.searchAccessibleItemNameText.isNotEmpty) {
-      final text = model.searchAccessibleItemNameText.value.toLowerCase();
-      final searchPeersOfUser = model.users.any((user) =>
-          user.name == peer.loginName &&
-          (user.name.toLowerCase().contains(text) ||
-              user.displayNameOrName.toLowerCase().contains(text)));
-      final searchPeersOfDeviceGroup =
-          peer.device_group_name.toLowerCase().contains(text) &&
-              model.deviceGroups.any((g) => g.name == peer.device_group_name);
-      if (!searchPeersOfUser && !searchPeersOfDeviceGroup) {
+    if (gFFI.groupModel.searchUserText.isNotEmpty) {
+      if (!peer.loginName.contains(gFFI.groupModel.searchUserText)) {
         return false;
       }
     }
-    if (model.selectedAccessibleItemName.isNotEmpty) {
-      if (model.isSelectedDeviceGroup.value) {
-        if (model.selectedAccessibleItemName.value != peer.device_group_name) {
-          return false;
-        }
-      } else {
-        if (model.selectedAccessibleItemName.value != peer.loginName) {
-          return false;
-        }
+    if (gFFI.groupModel.selectedUser.isNotEmpty) {
+      if (gFFI.groupModel.selectedUser.value != peer.loginName) {
+        return false;
       }
     }
     return true;

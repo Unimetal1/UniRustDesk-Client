@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:external_path/external_path.dart';
@@ -25,23 +24,6 @@ final class RgbaFrame extends Struct {
 typedef F3 = Pointer<Uint8> Function(Pointer<Utf8>, int);
 typedef F3Dart = Pointer<Uint8> Function(Pointer<Utf8>, Int32);
 typedef HandleEvent = Future<void> Function(Map<String, dynamic> evt);
-
-/// The Linux bundle keeps the core library at lib/librustdesk.so next to the
-/// executable. Prefer that copy, mirroring flutter/linux/main.cc: the plain
-/// name relies on the loader search path, which repackaged installs may not
-/// cover. https://github.com/rustdesk/rustdesk/discussions/14407
-DynamicLibrary _openLinuxCoreLib() {
-  final bundled =
-      '${File(Platform.resolvedExecutable).parent.path}/lib/librustdesk.so';
-  try {
-    if (File(bundled).existsSync()) {
-      return DynamicLibrary.open(bundled);
-    }
-  } catch (e) {
-    debugPrint("Failed to load '$bundled': $e");
-  }
-  return DynamicLibrary.open('librustdesk.so');
-}
 
 /// FFI wrapper around the native Rust core.
 /// Hides the platform differences.
@@ -78,14 +60,14 @@ class PlatformFFI {
   }
 
   bool registerEventHandler(
-      String eventName, String handlerName, HandleEvent handler, {bool replace = false}) {
+      String eventName, String handlerName, HandleEvent handler) {
     debugPrint('registerEventHandler $eventName $handlerName');
     var handlers = _eventHandlers[eventName];
     if (handlers == null) {
       _eventHandlers[eventName] = {handlerName: handler};
       return true;
     } else {
-      if (!replace && handlers.containsKey(handlerName)) {
+      if (handlers.containsKey(handlerName)) {
         return false;
       } else {
         handlers[handlerName] = handler;
@@ -138,7 +120,7 @@ class PlatformFFI {
     final dylib = isAndroid
         ? DynamicLibrary.open('librustdesk.so')
         : isLinux
-            ? _openLinuxCoreLib()
+            ? DynamicLibrary.open('librustdesk.so')
             : isWindows
                 ? DynamicLibrary.open('librustdesk.dll')
                 :
@@ -174,10 +156,7 @@ class PlatformFFI {
           // only support for android
           _homeDir = (await ExternalPath.getExternalStorageDirectories())[0];
         } else if (isIOS) {
-          // The previous code was `_homeDir = (await getDownloadsDirectory())?.path ?? '';`,
-          // which provided the `downloads` path in the sandbox.
-          // It is unclear why we now use the `data` directory in the sandbox instead.
-          _homeDir = _ffiBind.mainGetDataDirIos(appDir: _dir);
+          _homeDir = _ffiBind.mainGetDataDirIos();
         } else {
           // no need to set home dir
         }
@@ -283,12 +262,6 @@ class PlatformFFI {
   }
 
   void setRgbaCallback(void Function(int, Uint8List) fun) async {}
-
-  // web only, decoded WebCodecs frames arriving as ready-made images
-  void setVideoFrameCallback(
-      Future<void> Function(int, ui.Image, bool Function()) fun) {}
-
-  void clearVideoFrameCallback() {}
 
   void startDesktopWebListener() {}
 

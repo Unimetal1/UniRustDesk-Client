@@ -4,11 +4,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/widgets/audio_input.dart';
-import 'package:flutter_hbb/common/widgets/dialog.dart';
 import 'package:flutter_hbb/common/widgets/toolbar.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/consts.dart';
+import 'package:flutter_hbb/utils/multi_window_manager.dart';
+import 'package:flutter_hbb/plugin/widgets/desc_ui.dart';
+import 'package:flutter_hbb/plugin/common.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
@@ -22,232 +24,12 @@ import '../../models/platform_model.dart';
 import '../../common/shared_state.dart';
 import './popup_menu.dart';
 import './kb_layout_type_chooser.dart';
-import 'package:flutter_hbb/utils/scale.dart';
-import 'package:flutter_hbb/common/widgets/custom_scale_base.dart';
-
-enum _ToolbarEdge { top, right, bottom, left }
-
-_ToolbarEdge _parseToolbarEdge(String? s) {
-  switch (s) {
-    case 'right':
-      return _ToolbarEdge.right;
-    case 'bottom':
-      return _ToolbarEdge.bottom;
-    case 'left':
-      return _ToolbarEdge.left;
-    default:
-      return _ToolbarEdge.top;
-  }
-}
-
-String _toolbarEdgeToString(_ToolbarEdge e) {
-  switch (e) {
-    case _ToolbarEdge.top:
-      return 'top';
-    case _ToolbarEdge.right:
-      return 'right';
-    case _ToolbarEdge.bottom:
-      return 'bottom';
-    case _ToolbarEdge.left:
-      return 'left';
-  }
-}
-
-bool _isHorizontalEdge(_ToolbarEdge e) =>
-    e == _ToolbarEdge.top || e == _ToolbarEdge.bottom;
-
-const _legacyRemoteMenubarDragX = 'remote-menubar-drag-x';
-
-double _clampToolbarFraction(double fraction, double left, double right) {
-  if (fraction < left) fraction = left;
-  if (fraction > right) fraction = right;
-  return fraction;
-}
-
-Size _toolbarSizeForEdge(_ToolbarEdge edge, Size? measured) {
-  final isHorizontal = _isHorizontalEdge(edge);
-  final fallback = isHorizontal ? const Size(360, 40) : const Size(40, 360);
-  final size = measured ?? fallback;
-  final long = size.longestSide;
-  final short = size.shortestSide;
-  return Size(isHorizontal ? long : short, isHorizontal ? short : long);
-}
-
-Offset _toolbarOffsetForEdge({
-  required _ToolbarEdge edge,
-  required double fraction,
-  required Size parentSize,
-  required Size toolbarSize,
-}) {
-  final xTravel = parentSize.width - toolbarSize.width;
-  final yTravel = parentSize.height - toolbarSize.height;
-  switch (edge) {
-    case _ToolbarEdge.top:
-      return Offset(xTravel * fraction, 0);
-    case _ToolbarEdge.bottom:
-      return Offset(xTravel * fraction, yTravel);
-    case _ToolbarEdge.left:
-      return Offset(0, yTravel * fraction);
-    case _ToolbarEdge.right:
-      return Offset(xTravel, yTravel * fraction);
-  }
-}
-
-double _fractionForAlignedDrag({
-  required double cursor,
-  required double grabOffset,
-  required double parentExtent,
-  required double toolbarExtent,
-  required double left,
-  required double right,
-}) {
-  final travelExtent = parentExtent - toolbarExtent;
-  if (travelExtent <= 0) {
-    return _clampToolbarFraction(0.5, left, right);
-  }
-  return _clampToolbarFraction(
-      (cursor - grabOffset) / travelExtent, left, right);
-}
-
-({double left, double right}) _fractionBoundsForEdge(
-  _ToolbarEdge edge,
-  double left,
-  double right,
-) {
-  return _isHorizontalEdge(edge)
-      ? (left: left, right: right)
-      : (left: 0, right: 1);
-}
-
-String _toolbarRawFraction({
-  required bool multiEdgeEnabled,
-  required _ToolbarEdge edge,
-  required String? savedFraction,
-  required String? legacyFraction,
-}) {
-  if (!multiEdgeEnabled) {
-    return (legacyFraction != null && legacyFraction.isNotEmpty)
-        ? legacyFraction
-        : '0.5';
-  }
-  if (savedFraction != null && savedFraction.isNotEmpty) {
-    return savedFraction;
-  }
-  if (edge == _ToolbarEdge.top &&
-      legacyFraction != null &&
-      legacyFraction.isNotEmpty) {
-    return legacyFraction;
-  }
-  return '0.5';
-}
-
-// Returns the alignment for the wrapper Align that positions the entire
-// toolbar against the given edge at the given fraction along that edge.
-// Alignment uses [-1, 1] coordinates (0 = center).
-Alignment _alignmentForEdge(_ToolbarEdge edge, double fraction) {
-  final f = fraction * 2 - 1;
-  switch (edge) {
-    case _ToolbarEdge.top:
-      return Alignment(f, -1);
-    case _ToolbarEdge.bottom:
-      return Alignment(f, 1);
-    case _ToolbarEdge.left:
-      return Alignment(-1, f);
-    case _ToolbarEdge.right:
-      return Alignment(1, f);
-  }
-}
-
-// The drag handle hangs off the side of the toolbar facing away from the
-// docked edge, so the icons themselves sit flush against that edge.
-BorderRadius _collapseHandleBorderRadius(_ToolbarEdge edge) {
-  const r = Radius.circular(5);
-  switch (edge) {
-    case _ToolbarEdge.top:
-      return const BorderRadius.vertical(bottom: r);
-    case _ToolbarEdge.bottom:
-      return const BorderRadius.vertical(top: r);
-    case _ToolbarEdge.left:
-      return const BorderRadius.horizontal(right: r);
-    case _ToolbarEdge.right:
-      return const BorderRadius.horizontal(left: r);
-  }
-}
-
-int _monitorMenuQuarterTurns(_ToolbarEdge edge) {
-  switch (edge) {
-    case _ToolbarEdge.left:
-      return 1;
-    case _ToolbarEdge.right:
-      return 3;
-    case _ToolbarEdge.top:
-    case _ToolbarEdge.bottom:
-      return 0;
-  }
-}
-
-IconData _toolbarCollapseIcon(_ToolbarEdge edge, bool isCollapsed) {
-  switch (edge) {
-    case _ToolbarEdge.top:
-      return isCollapsed ? Icons.expand_more : Icons.expand_less;
-    case _ToolbarEdge.bottom:
-      return isCollapsed ? Icons.expand_less : Icons.expand_more;
-    case _ToolbarEdge.left:
-      return isCollapsed ? Icons.chevron_right : Icons.chevron_left;
-    case _ToolbarEdge.right:
-      return isCollapsed ? Icons.chevron_left : Icons.chevron_right;
-  }
-}
-
-class _ToolbarDockingOptions {
-  _ToolbarDockingOptions({
-    required this.edge,
-    required this.fraction,
-    required this.multiEdgeEnabled,
-  });
-
-  _ToolbarEdge edge;
-  double fraction;
-  bool multiEdgeEnabled;
-}
-
-final _toolbarDockingOptionsBySession = <String, _ToolbarDockingOptions>{};
-
-String _toolbarDockingCacheKey(SessionID sessionId) => sessionId.toString();
-
-_ToolbarDockingOptions? _cachedToolbarDockingOptions(SessionID sessionId) =>
-    _toolbarDockingOptionsBySession[_toolbarDockingCacheKey(sessionId)];
-
-void _cacheToolbarDockingOptions({
-  required SessionID sessionId,
-  required _ToolbarEdge edge,
-  required double fraction,
-  required bool multiEdgeEnabled,
-}) {
-  final key = _toolbarDockingCacheKey(sessionId);
-  final cached = _toolbarDockingOptionsBySession[key];
-  if (cached == null) {
-    _toolbarDockingOptionsBySession[key] = _ToolbarDockingOptions(
-      edge: edge,
-      fraction: fraction,
-      multiEdgeEnabled: multiEdgeEnabled,
-    );
-    return;
-  }
-  cached.edge = edge;
-  cached.fraction = fraction;
-  cached.multiEdgeEnabled = multiEdgeEnabled;
-}
 
 class ToolbarState {
   late RxBool _pin;
 
-  RxBool collapse = false.obs;
-  RxBool hide = false.obs;
-
-  // Track initialization state to prevent flickering
-  final RxBool initialized = false.obs;
-  bool _isInitializing = false;
+  bool isShowInited = false;
+  RxBool show = false.obs;
 
   ToolbarState() {
     _pin = RxBool(false);
@@ -268,39 +50,19 @@ class ToolbarState {
 
   bool get pin => _pin.value;
 
-  /// Initialize all toolbar states from session options.
-  /// This should be called once when the toolbar is first created.
-  Future<void> init(SessionID sessionId) async {
-    if (initialized.value || _isInitializing) return;
-    _isInitializing = true;
-
-    try {
-      // Load both states in parallel for better performance
-      final results = await Future.wait([
-        bind.sessionGetToggleOption(
-            sessionId: sessionId, arg: kOptionCollapseToolbar),
-        bind.sessionGetToggleOption(
-            sessionId: sessionId, arg: kOptionHideToolbar),
-      ]);
-
-      collapse.value = results[0] ?? false;
-      hide.value = results[1] ?? false;
-    } finally {
-      _isInitializing = false;
-      initialized.value = true;
-    }
-  }
-
-  switchCollapse(SessionID sessionId) async {
+  switchShow(SessionID sessionId) async {
     bind.sessionToggleOption(
         sessionId: sessionId, value: kOptionCollapseToolbar);
-    collapse.value = !collapse.value;
+    show.value = !show.value;
   }
 
-  // Switch hide state for entire toolbar visibility
-  switchHide(SessionID sessionId) async {
-    bind.sessionToggleOption(sessionId: sessionId, value: kOptionHideToolbar);
-    hide.value = !hide.value;
+  initShow(SessionID sessionId) async {
+    if (!isShowInited) {
+      show.value = !(await bind.sessionGetToggleOption(
+              sessionId: sessionId, arg: kOptionCollapseToolbar) ??
+          false);
+      isShowInited = true;
+    }
   }
 
   switchPin() async {
@@ -389,6 +151,129 @@ class _ToolbarTheme {
 typedef DismissFunc = void Function();
 
 class RemoteMenuEntry {
+  static MenuEntryRadios<String> viewStyle(
+    String remoteId,
+    FFI ffi,
+    EdgeInsets padding, {
+    DismissFunc? dismissFunc,
+    DismissCallback? dismissCallback,
+    RxString? rxViewStyle,
+  }) {
+    return MenuEntryRadios<String>(
+      text: translate('Ratio'),
+      optionsGetter: () => [
+        MenuEntryRadioOption(
+          text: translate('Scale original'),
+          value: kRemoteViewStyleOriginal,
+          dismissOnClicked: true,
+          dismissCallback: dismissCallback,
+        ),
+        MenuEntryRadioOption(
+          text: translate('Scale adaptive'),
+          value: kRemoteViewStyleAdaptive,
+          dismissOnClicked: true,
+          dismissCallback: dismissCallback,
+        ),
+      ],
+      curOptionGetter: () async {
+        // null means peer id is not found, which there's no need to care about
+        final viewStyle =
+            await bind.sessionGetViewStyle(sessionId: ffi.sessionId) ?? '';
+        if (rxViewStyle != null) {
+          rxViewStyle.value = viewStyle;
+        }
+        return viewStyle;
+      },
+      optionSetter: (String oldValue, String newValue) async {
+        await bind.sessionSetViewStyle(
+            sessionId: ffi.sessionId, value: newValue);
+        if (rxViewStyle != null) {
+          rxViewStyle.value = newValue;
+        }
+        ffi.canvasModel.updateViewStyle();
+        if (dismissFunc != null) {
+          dismissFunc();
+        }
+      },
+      padding: padding,
+      dismissOnClicked: true,
+      dismissCallback: dismissCallback,
+    );
+  }
+
+  static MenuEntrySwitch2<String> showRemoteCursor(
+    String remoteId,
+    SessionID sessionId,
+    EdgeInsets padding, {
+    DismissFunc? dismissFunc,
+    DismissCallback? dismissCallback,
+  }) {
+    final state = ShowRemoteCursorState.find(remoteId);
+    final optKey = 'show-remote-cursor';
+    return MenuEntrySwitch2<String>(
+      switchType: SwitchType.scheckbox,
+      text: translate('Show remote cursor'),
+      getter: () {
+        return state;
+      },
+      setter: (bool v) async {
+        await bind.sessionToggleOption(sessionId: sessionId, value: optKey);
+        state.value =
+            bind.sessionGetToggleOptionSync(sessionId: sessionId, arg: optKey);
+        if (dismissFunc != null) {
+          dismissFunc();
+        }
+      },
+      padding: padding,
+      dismissOnClicked: true,
+      dismissCallback: dismissCallback,
+    );
+  }
+
+  static MenuEntrySwitch<String> disableClipboard(
+    SessionID sessionId,
+    EdgeInsets? padding, {
+    DismissFunc? dismissFunc,
+    DismissCallback? dismissCallback,
+  }) {
+    return createSwitchMenuEntry(
+      sessionId,
+      'Disable clipboard',
+      'disable-clipboard',
+      padding,
+      true,
+      dismissCallback: dismissCallback,
+    );
+  }
+
+  static MenuEntrySwitch<String> createSwitchMenuEntry(
+    SessionID sessionId,
+    String text,
+    String option,
+    EdgeInsets? padding,
+    bool dismissOnClicked, {
+    DismissFunc? dismissFunc,
+    DismissCallback? dismissCallback,
+  }) {
+    return MenuEntrySwitch<String>(
+      switchType: SwitchType.scheckbox,
+      text: translate(text),
+      getter: () async {
+        return bind.sessionGetToggleOptionSync(
+            sessionId: sessionId, arg: option);
+      },
+      setter: (bool v) async {
+        await bind.sessionToggleOption(sessionId: sessionId, value: option);
+        if (dismissFunc != null) {
+          dismissFunc();
+        }
+      },
+      padding: padding,
+      dismissOnClicked: dismissOnClicked,
+      dismissCallback: dismissCallback,
+    );
+  }
+
   static MenuEntryButton<String> insertLock(
     SessionID sessionId,
     EdgeInsets? padding, {
@@ -461,26 +346,8 @@ class RemoteToolbar extends StatefulWidget {
 class _RemoteToolbarState extends State<RemoteToolbar> {
   late Debouncer<int> _debouncerHide;
   bool _isCursorOverImage = false;
-  final _fraction = 0.5.obs;
-  final _edge = _ToolbarEdge.top.obs;
+  final _fractionX = 0.5.obs;
   final _dragging = false.obs;
-  // Live drag preview: where the toolbar would dock if the user dropped now.
-  final _previewEdge = Rxn<_ToolbarEdge>();
-  final _previewFraction = Rxn<double>();
-  // Measured size of the live toolbar, so the preview ghost matches reality
-  // (collapsed handle vs expanded toolbar). Updated after every layout pass.
-  final _toolbarSize = Rxn<Size>();
-  final _toolbarKey = GlobalKey(debugLabel: 'remote_toolbar_root');
-  // When false (default), the toolbar stays on the top edge and the drag
-  // handle just slides it horizontally — preserving long-standing UX while
-  // still fixing the bug where dragging only moved the handle. When true,
-  // the user has opted into multi-edge docking with nearest-edge snap.
-  // Kept in sync after settings-triggered rebuilds.
-  final _multiEdgeEnabled = false.obs;
-  final _dockingOptionsInitialized = false.obs;
-  bool _pendingDockingOptionSync = false;
-  int _dockingOptionSyncSerial = 0;
-  int _dragEpoch = 0;
 
   int get windowId => stateGlobal.windowId;
 
@@ -490,8 +357,7 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
     // setState(() {});
   }
 
-  RxBool get collapse => widget.state.collapse;
-  RxBool get hide => widget.state.hide;
+  RxBool get show => widget.state.show;
   bool get pin => widget.state.pin;
 
   PeerInfo get pi => widget.ffi.ffiModel.pi;
@@ -502,146 +368,16 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
   void _minimize() async =>
       await WindowController.fromWindowId(windowId).minimize();
 
-  Future<void> _syncDockingOptions({required bool force}) async {
-    final syncSerial = ++_dockingOptionSyncSerial;
-    if (_dragging.isTrue) {
-      _deferDockingOptionsSync();
-      return;
-    }
-    final dragEpoch = _dragEpoch;
-
-    // Use the canonical helper so the option's documented default semantics
-    // apply (allow-* prefix => default false). Keeping it raw-string would
-    // diverge from how _OptionCheckBox displays the same key.
-    final multiEdgeEnabled =
-        mainGetLocalBoolOptionSync(kOptionAllowMultiEdgeToolbarDock);
-    final cached = _cachedToolbarDockingOptions(widget.ffi.sessionId);
-    if (cached == null && pi.isSet.isFalse) {
-      return;
-    }
-    final hadDockingOptions = cached != null;
-    final wasMultiEdgeEnabled =
-        cached?.multiEdgeEnabled ?? _multiEdgeEnabled.value;
-    if (!force &&
-        hadDockingOptions &&
-        wasMultiEdgeEnabled == multiEdgeEnabled) {
-      _pendingDockingOptionSync = false;
-      return;
-    }
-
-    final savedFraction = await bind.sessionGetOption(
-        sessionId: widget.ffi.sessionId, arg: kOptionRemoteMenubarFraction);
-    // Backward compat: legacy horizontal-only position.
-    final legacyFraction = await bind.sessionGetOption(
-        sessionId: widget.ffi.sessionId, arg: _legacyRemoteMenubarDragX);
-    if (!mounted || syncSerial != _dockingOptionSyncSerial) return;
-
-    var nextEdge = _edge.value;
-    var savedFractionForNextEdge = savedFraction;
-    var keepCurrentPosition = false;
-    if (!multiEdgeEnabled) {
-      nextEdge = _ToolbarEdge.top;
-    } else if (force || wasMultiEdgeEnabled || cached == null) {
-      final edgeStr = await bind.sessionGetOption(
-          sessionId: widget.ffi.sessionId, arg: kOptionRemoteMenubarEdge);
-      if (!mounted || syncSerial != _dockingOptionSyncSerial) return;
-      nextEdge = _parseToolbarEdge(edgeStr);
-    } else {
-      // The setting changed from top-only to multi-edge while this toolbar is
-      // already visible. Keep its current position instead of jumping to the
-      // last saved multi-edge dock.
-      nextEdge = cached.edge;
-      savedFractionForNextEdge = cached.fraction.toString();
-      keepCurrentPosition = true;
-    }
-
-    final rawFraction = _toolbarRawFraction(
-      multiEdgeEnabled: multiEdgeEnabled,
-      edge: nextEdge,
-      savedFraction: savedFractionForNextEdge,
-      legacyFraction: legacyFraction,
-    );
-    // Clamp to the saved drag-bound contract so a corrupted or out-of-range
-    // saved value can't bypass it until the user drags again.
-    final dragLeft = double.tryParse(
-            bind.mainGetLocalOption(key: kOptionRemoteMenubarDragLeft)) ??
-        0.0;
-    final dragRight = double.tryParse(
-            bind.mainGetLocalOption(key: kOptionRemoteMenubarDragRight)) ??
-        1.0;
-    final fractionBounds =
-        _fractionBoundsForEdge(nextEdge, dragLeft, dragRight);
-    final nextFraction = (double.tryParse(rawFraction) ?? 0.5)
-        .clamp(fractionBounds.left, fractionBounds.right)
-        .toDouble();
-    if (!mounted || syncSerial != _dockingOptionSyncSerial) return;
-    if (_dragging.isTrue || dragEpoch != _dragEpoch) {
-      _deferDockingOptionsSync();
-      return;
-    }
-    _edge.value = nextEdge;
-    _fraction.value = nextFraction;
-    _multiEdgeEnabled.value = multiEdgeEnabled;
-    _dockingOptionsInitialized.value = true;
-    _cacheToolbarDockingOptions(
-      sessionId: widget.ffi.sessionId,
-      edge: nextEdge,
-      fraction: nextFraction,
-      multiEdgeEnabled: multiEdgeEnabled,
-    );
-    _pendingDockingOptionSync = false;
-    if (!multiEdgeEnabled || keepCurrentPosition) {
-      bind.sessionPeerOption(
-        sessionId: widget.ffi.sessionId,
-        name: kOptionRemoteMenubarEdge,
-        value: _toolbarEdgeToString(nextEdge),
-      );
-      bind.sessionPeerOption(
-        sessionId: widget.ffi.sessionId,
-        name: kOptionRemoteMenubarFraction,
-        value: nextFraction.toString(),
-      );
-    }
-  }
-
-  void _deferDockingOptionsSync() {
-    _pendingDockingOptionSync = true;
-    if (_dragging.isFalse) {
-      _syncDockingOptionsAfterDragIfNeeded();
-    }
-  }
-
-  void _markToolbarDragEpoch() {
-    ++_dragEpoch;
-  }
-
-  void _syncDockingOptionsAfterDragIfNeeded() {
-    if (!_pendingDockingOptionSync) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _syncDockingOptions(force: false);
-    });
-  }
-
   @override
   initState() {
     super.initState();
 
-    final cached = _cachedToolbarDockingOptions(widget.ffi.sessionId);
-    final multiEdgeEnabled =
-        mainGetLocalBoolOptionSync(kOptionAllowMultiEdgeToolbarDock);
-    final shouldResetToTop =
-        cached != null && cached.multiEdgeEnabled && !multiEdgeEnabled;
-    if (cached != null && !shouldResetToTop) {
-      _edge.value = cached.edge;
-      _fraction.value = cached.fraction;
-      _multiEdgeEnabled.value = multiEdgeEnabled;
-      _dockingOptionsInitialized.value = true;
-    }
-
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _syncDockingOptions(force: cached == null || shouldResetToTop);
-      // Initialize toolbar states (collapse, hide) from session options
-      widget.state.init(widget.ffi.sessionId);
+      _fractionX.value = double.tryParse(await bind.sessionGetOption(
+                  sessionId: widget.ffi.sessionId,
+                  arg: 'remote-menubar-drag-x') ??
+              '0.5') ??
+          0.5;
     });
 
     _debouncerHide = Debouncer<int>(
@@ -660,173 +396,74 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
     });
   }
 
-  @override
-  void didUpdateWidget(covariant RemoteToolbar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _syncDockingOptions(force: false);
-    });
-  }
-
   _debouncerHideProc(int v) {
-    if (!pin && collapse.isFalse && _isCursorOverImage && _dragging.isFalse) {
-      collapse.value = true;
+    if (!pin && show.isTrue && _isCursorOverImage && _dragging.isFalse) {
+      show.value = false;
     }
   }
 
   @override
   dispose() {
-    ++_dockingOptionSyncSerial;
-    widget.onEnterOrLeaveImageCleaner(identityHashCode(this));
     super.dispose();
+
+    widget.onEnterOrLeaveImageCleaner(identityHashCode(this));
   }
 
   @override
   Widget build(BuildContext context) {
-    return Obx(() {
-      // Wait for initialization to complete to prevent flickering
-      if (!widget.state.initialized.value ||
-          !_dockingOptionsInitialized.value) {
-        return const SizedBox.shrink();
-      }
-      // If toolbar is hidden, return empty widget
-      if (hide.value) {
-        return const SizedBox.shrink();
-      }
-      final edge = _edge.value;
-      final isHorizontal = _isHorizontalEdge(edge);
-
-      // Measure the live toolbar after every layout so the preview ghost can
-      // match its actual footprint (collapsed handle vs expanded toolbar).
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_dragging.isTrue) return;
-        final ro = _toolbarKey.currentContext?.findRenderObject();
-        if (ro is RenderBox && ro.hasSize) {
-          final s = ro.size;
-          if (_toolbarSize.value != s) _toolbarSize.value = s;
-        }
-      });
-
-      final toolbar = Align(
-        alignment: _alignmentForEdge(edge, _fraction.value),
-        child: KeyedSubtree(
-          key: _toolbarKey,
-          child: collapse.isFalse
-              ? _buildToolbar(context, edge, isHorizontal)
-              : _buildDraggableCollapse(context, edge, isHorizontal),
-        ),
-      );
-
-      // Always return the Stack — even when not dragging — so the toolbar's
-      // position in the Element tree stays stable. Wrapping/unwrapping it
-      // mid-drag was killing the Draggable's gesture state.
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          IgnorePointer(
-            child: Obx(() {
-              final pe = _previewEdge.value;
-              final pf = _previewFraction.value;
-              if (!_dragging.isTrue || pe == null || pf == null) {
-                return const SizedBox.shrink();
-              }
-              return _buildDragPreview(context, pe, pf, _toolbarSize.value);
-            }),
-          ),
-          toolbar,
-        ],
-      );
-    });
-  }
-
-  Widget _buildDragPreview(BuildContext context, _ToolbarEdge edge,
-      double fraction, Size? measured) {
-    final color = Theme.of(context).colorScheme.primary;
-    // Use the measured live toolbar size so collapsed vs expanded looks
-    // right. The current orientation may differ from the preview orientation
-    // (e.g. dragging a top-docked toolbar toward the left edge), so swap the
-    // long/short axes when previewing a different orientation.
-    final previewSize = _toolbarSizeForEdge(edge, measured);
     return Align(
-      alignment: _alignmentForEdge(edge, fraction),
-      child: Container(
-        width: previewSize.width,
-        height: previewSize.height,
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.10),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: color.withOpacity(0.55), width: 1.5),
-        ),
-      ),
+      alignment: Alignment.topCenter,
+      child: Obx(() => show.value
+          ? _buildToolbar(context)
+          : _buildDraggableShowHide(context)),
     );
   }
 
-  Widget _buildDraggableCollapse(
-      BuildContext context, _ToolbarEdge edge, bool isHorizontal) {
+  Widget _buildDraggableShowHide(BuildContext context) {
     return Obx(() {
-      if (collapse.isFalse && _dragging.isFalse) {
+      if (show.isTrue && _dragging.isFalse) {
         triggerAutoHide();
       }
-      final borderRadius = _collapseHandleBorderRadius(edge);
-      return Offstage(
-        offstage: _dragging.isTrue,
-        child: Material(
-          elevation: _ToolbarTheme.elevation,
-          shadowColor: MyTheme.color(context).shadow,
-          borderRadius: borderRadius,
-          child: _DraggableShowHide(
-            id: widget.id,
-            ffi: widget.ffi,
-            sessionId: widget.ffi.sessionId,
-            dragging: _dragging,
-            fraction: _fraction,
-            edge: _edge,
-            previewEdge: _previewEdge,
-            previewFraction: _previewFraction,
-            toolbarSize: _toolbarSize,
-            markDragEpoch: _markToolbarDragEpoch,
-            syncDockingOptionsAfterDragIfNeeded:
-                _syncDockingOptionsAfterDragIfNeeded,
-            isHorizontal: isHorizontal,
-            multiEdgeEnabled: _multiEdgeEnabled.value,
-            toolbarState: widget.state,
-            setFullscreen: _setFullscreen,
-            setMinimize: _minimize,
+      final borderRadius = BorderRadius.vertical(
+        bottom: Radius.circular(5),
+      );
+      return Align(
+        alignment: FractionalOffset(_fractionX.value, 0),
+        child: Offstage(
+          offstage: _dragging.isTrue,
+          child: Material(
+            elevation: _ToolbarTheme.elevation,
+            shadowColor: MyTheme.color(context).shadow,
             borderRadius: borderRadius,
+            child: _DraggableShowHide(
+              id: widget.id,
+              sessionId: widget.ffi.sessionId,
+              dragging: _dragging,
+              fractionX: _fractionX,
+              toolbarState: widget.state,
+              setFullscreen: _setFullscreen,
+              setMinimize: _minimize,
+              borderRadius: borderRadius,
+            ),
           ),
         ),
       );
     });
   }
 
-  Widget _buildToolbar(
-      BuildContext context, _ToolbarEdge edge, bool isHorizontal) {
+  Widget _buildToolbar(BuildContext context) {
     final List<Widget> toolbarItems = [];
     toolbarItems.add(_PinMenu(state: widget.state));
-    toolbarItems.add(Obx(() {
-      final privacyModeState = PrivacyModeState.find(widget.id);
-      if ((privacyModeState.isEmpty ||
-              allowDisplaySwitchInPrivacyMode(pi, privacyModeState.value)) &&
-          pi.displaysCount.value > 1 &&
-          mainGetLocalBoolOptionSync(kOptionAllowMonitorSwitchMainToolbar)) {
-        return _MainMonitorSwitchButton(id: widget.id, ffi: widget.ffi);
-      } else {
-        return const Offstage();
-      }
-    }));
     if (!isWebDesktop) {
       toolbarItems.add(_MobileActionMenu(ffi: widget.ffi));
     }
 
     toolbarItems.add(Obx(() {
-      final privacyModeState = PrivacyModeState.find(widget.id);
-      if ((privacyModeState.isEmpty ||
-              allowDisplaySwitchInPrivacyMode(pi, privacyModeState.value)) &&
+      if (PrivacyModeState.find(widget.id).isEmpty &&
           pi.displaysCount.value > 1) {
         return _MonitorMenu(
             id: widget.id,
             ffi: widget.ffi,
-            edge: edge,
             setRemoteState: widget.setRemoteState);
       } else {
         return Offstage();
@@ -841,10 +478,7 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
       state: widget.state,
       setFullscreen: _setFullscreen,
     ));
-    // Do not show keyboard for camera connection type.
-    if (widget.ffi.connType == ConnType.defaultConn) {
-      toolbarItems.add(_KeyboardMenu(id: widget.id, ffi: widget.ffi));
-    }
+    toolbarItems.add(_KeyboardMenu(id: widget.id, ffi: widget.ffi));
     toolbarItems.add(_ChatMenu(id: widget.id, ffi: widget.ffi));
     if (!isWeb) {
       toolbarItems.add(_VoiceCallMenu(id: widget.id, ffi: widget.ffi));
@@ -852,53 +486,37 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
     if (!isWeb) toolbarItems.add(_RecordMenu());
     toolbarItems.add(_CloseMenu(id: widget.id, ffi: widget.ffi));
     final toolbarBorderRadius = BorderRadius.all(Radius.circular(4.0));
-    // innerAxis: how the toolbar icons themselves flow.
-    // outerAxis: how the toolbar block and the handle stack against each other
-    // (perpendicular to the dock edge, so the handle hangs off the interior face).
-    final innerAxis = isHorizontal ? Axis.horizontal : Axis.vertical;
-    final outerAxis = isHorizontal ? Axis.vertical : Axis.horizontal;
-    final spacer = isHorizontal
-        ? SizedBox(width: _ToolbarTheme.buttonHMargin * 2)
-        : SizedBox(height: _ToolbarTheme.buttonHMargin * 2);
-    final toolbarMaterial = Material(
-      elevation: _ToolbarTheme.elevation,
-      shadowColor: MyTheme.color(context).shadow,
-      borderRadius: toolbarBorderRadius,
-      color: Theme.of(context)
-          .menuBarTheme
-          .style
-          ?.backgroundColor
-          ?.resolve(MaterialState.values.toSet()),
-      child: SingleChildScrollView(
-        scrollDirection: innerAxis,
-        child: Theme(
-          data: themeData(),
-          child: _ToolbarTheme.borderWrapper(
-              context,
-              Flex(
-                direction: innerAxis,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  spacer,
-                  ...toolbarItems,
-                  spacer,
-                ],
-              ),
-              toolbarBorderRadius),
-        ),
-      ),
-    );
-    final handle = _buildDraggableCollapse(context, edge, isHorizontal);
-    // The handle hangs off the interior face of the toolbar (away from the
-    // docked edge), centered along that face by the Flex's default cross-axis
-    // alignment, so the icons themselves sit flush against the docked edge.
-    final children = (edge == _ToolbarEdge.top || edge == _ToolbarEdge.left)
-        ? [toolbarMaterial, handle]
-        : [handle, toolbarMaterial];
-    return Flex(
-      direction: outerAxis,
+    return Column(
       mainAxisSize: MainAxisSize.min,
-      children: children,
+      children: [
+        Material(
+          elevation: _ToolbarTheme.elevation,
+          shadowColor: MyTheme.color(context).shadow,
+          borderRadius: toolbarBorderRadius,
+          color: Theme.of(context)
+              .menuBarTheme
+              .style
+              ?.backgroundColor
+              ?.resolve(MaterialState.values.toSet()),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Theme(
+              data: themeData(),
+              child: _ToolbarTheme.borderWrapper(
+                  context,
+                  Row(
+                    children: [
+                      SizedBox(width: _ToolbarTheme.buttonHMargin * 2),
+                      ...toolbarItems,
+                      SizedBox(width: _ToolbarTheme.buttonHMargin * 2)
+                    ],
+                  ),
+                  toolbarBorderRadius),
+            ),
+          ),
+        ),
+        _buildDraggableShowHide(context),
+      ],
     );
   }
 
@@ -974,98 +592,14 @@ class _MobileActionMenu extends StatelessWidget {
   }
 }
 
-class _MonitorCycle {
-  final String id;
-  final FFI ffi;
-  const _MonitorCycle(this.id, this.ffi);
-
-  PeerInfo get _pi => ffi.ffiModel.pi;
-  int get total => _pi.displays.length;
-  int get _current => CurrentDisplayState.find(id).value;
-  bool get _inRange => _current >= 0 && _current < total;
-
-  String get label => _inRange ? '${_current + 1}' : '*';
-  String get tooltip => '${translate('Switch display')} ($label/$total)';
-
-  void next() {
-    final t = total;
-    if (t < 2) return;
-    final from = _inRange ? _current : -1;
-    final target = (from + 1) % t;
-    final isChooseDisplayToOpenInNewWindow = _pi.isSupportMultiDisplay &&
-        bind.sessionGetDisplaysAsIndividualWindows(sessionId: ffi.sessionId) ==
-            'Y';
-    if (isChooseDisplayToOpenInNewWindow) {
-      openMonitorInNewTabOrWindow(target, ffi.id, _pi);
-    } else {
-      openMonitorInTheSameTab(target, ffi, _pi, updateCursorPos: false);
-    }
-  }
-}
-
-class _MainMonitorSwitchButton extends StatelessWidget {
-  final String id;
-  final FFI ffi;
-
-  const _MainMonitorSwitchButton({
-    Key? key,
-    required this.id,
-    required this.ffi,
-  }) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    final cycle = _MonitorCycle(id, ffi);
-    return Obx(() {
-      if (cycle.total < 2) return const Offstage();
-      final label = cycle.label;
-
-      return _IconMenuButton(
-        tooltip: cycle.tooltip,
-        color: _ToolbarTheme.blueColor,
-        hoverColor: _ToolbarTheme.hoverBlueColor,
-        onPressed: cycle.next,
-        icon: SizedBox(
-          width: _ToolbarTheme.buttonSize,
-          height: _ToolbarTheme.buttonSize,
-          child: Stack(
-            alignment: const Alignment(0, -0.125),
-            children: [
-              SvgPicture.asset(
-                'assets/display_switcher.svg',
-                colorFilter:
-                    const ColorFilter.mode(Colors.white, BlendMode.srcIn),
-                width: _ToolbarTheme.buttonSize,
-                height: _ToolbarTheme.buttonSize,
-              ),
-              Text(
-                label,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.black,
-                  fontSize: 11,
-                  height: 1,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    });
-  }
-}
-
 class _MonitorMenu extends StatelessWidget {
   final String id;
   final FFI ffi;
-  final _ToolbarEdge edge;
   final Function(VoidCallback) setRemoteState;
   const _MonitorMenu({
     Key? key,
     required this.id,
     required this.ffi,
-    required this.edge,
     required this.setRemoteState,
   }) : super(key: key);
 
@@ -1076,17 +610,9 @@ class _MonitorMenu extends StatelessWidget {
       !isWeb && ffi.ffiModel.pi.isSupportMultiDisplay;
 
   @override
-  Widget build(BuildContext context) {
-    final child = showMonitorsToolbar
-        ? buildMultiMonitorMenu(context)
-        : Obx(() => buildMonitorMenu(context));
-    final quarterTurns = _monitorMenuQuarterTurns(edge);
-    if (quarterTurns == 0) return child;
-    return RotatedBox(
-      quarterTurns: quarterTurns,
-      child: child,
-    );
-  }
+  Widget build(BuildContext context) => showMonitorsToolbar
+      ? buildMultiMonitorMenu(context)
+      : Obx(() => buildMonitorMenu(context));
 
   Widget buildMonitorMenu(BuildContext context) {
     final width = SimpleWrapper<double>(0);
@@ -1102,7 +628,7 @@ class _MonitorMenu extends StatelessWidget {
         menuStyle: MenuStyle(
             padding:
                 MaterialStatePropertyAll(EdgeInsets.symmetric(horizontal: 6))),
-        menuChildrenGetter: (_) => [buildMonitorSubmenuWidget(context)]);
+        menuChildrenGetter: () => [buildMonitorSubmenuWidget(context)]);
   }
 
   Widget buildMultiMonitorMenu(BuildContext context) {
@@ -1164,8 +690,8 @@ class _MonitorMenu extends StatelessWidget {
             tooltip: isMulti
                 ? ''
                 : isAllMonitors
-                    ? 'All monitors'
-                    : '#{${i + 1}} monitor',
+                    ? 'all monitors'
+                    : '#${i + 1} monitor',
             hMargin: isMulti ? null : 6,
             vMargin: isMulti ? null : 12,
             topLevel: false,
@@ -1218,8 +744,7 @@ class _MonitorMenu extends StatelessWidget {
       }
 
       final scale = _ToolbarTheme.buttonSize / rect.height * 0.75;
-      final height = rect.height * scale;
-      final startY = (_ToolbarTheme.buttonSize - height) * 0.5;
+      final startY = (_ToolbarTheme.buttonSize - rect.height * scale) * 0.5;
       final startX = startY;
 
       final children = <Widget>[];
@@ -1262,7 +787,7 @@ class _MonitorMenu extends StatelessWidget {
       width.value = rect.width * scale + startX * 2;
       return SizedBox(
         width: width.value,
-        height: height + startY * 2,
+        height: rect.height * scale + startY * 2,
         child: Stack(
           children: children,
         ),
@@ -1314,7 +839,7 @@ class _ControlMenu extends StatelessWidget {
         color: _ToolbarTheme.blueColor,
         hoverColor: _ToolbarTheme.hoverBlueColor,
         ffi: ffi,
-        menuChildrenGetter: (_) => toolbarControls(context, id, ffi).map((e) {
+        menuChildrenGetter: () => toolbarControls(context, id, ffi).map((e) {
               if (e.divider) {
                 return Divider();
               } else {
@@ -1333,12 +858,6 @@ class ScreenAdjustor {
   final FFI ffi;
   final VoidCallback cbExitFullscreen;
   window_size.Screen? _screen;
-  Size? _waylandMaximizedWorkAreaSize;
-  Rect? _waylandWorkAreaScreenFrame;
-  double? _waylandWorkAreaScaleFactor;
-  Rect? _x11WorkArea;
-  Rect? _x11WorkAreaScreenFrame;
-  double? _x11WorkAreaScaleFactor;
 
   ScreenAdjustor({
     required this.id,
@@ -1349,18 +868,9 @@ class ScreenAdjustor {
   bool get isFullscreen => stateGlobal.fullscreen.isTrue;
   int get windowId => stateGlobal.windowId;
 
-  Future<bool?> isWindowMaximized() async {
-    try {
-      return await WindowController.fromWindowId(windowId).isMaximized();
-    } catch (_) {
-      // The delayed resolution callback may run after the window is disposed.
-      return null;
-    }
-  }
-
   adjustWindow(BuildContext context) {
     return futureBuilder(
-        future: isWindowCanBeAdjusted(context),
+        future: isWindowCanBeAdjusted(),
         hasData: (data) {
           final visible = data as bool;
           if (!visible) return Offstage();
@@ -1376,201 +886,36 @@ class ScreenAdjustor {
         });
   }
 
-  // Linux screen and work-area coordinates can use different units or become
-  // unreliable across Wayland/X11 state changes, so normalize reported frames
-  // and cache usable work-area measurements before sizing the window.
-
-  Future<void> _updateLinuxWorkAreaCache({
-    required window_size.Screen screen,
-    required Rect wndRect,
-    required bool isWayland,
-    required bool isX11,
-    required bool forMenu,
-  }) async {
-    if (isWayland &&
-        (_waylandWorkAreaScreenFrame != screen.frame ||
-            _waylandWorkAreaScaleFactor != screen.scaleFactor)) {
-      _waylandMaximizedWorkAreaSize = null;
-      _waylandWorkAreaScreenFrame = screen.frame;
-      _waylandWorkAreaScaleFactor = screen.scaleFactor;
-    }
-    if (isWayland &&
-        forMenu &&
-        !isFullscreen &&
-        await isWindowMaximized() == true) {
-      _waylandMaximizedWorkAreaSize = wndRect.size;
-    }
-    if (isX11 &&
-        (_x11WorkAreaScreenFrame != screen.frame ||
-            _x11WorkAreaScaleFactor != screen.scaleFactor)) {
-      _x11WorkArea = null;
-      _x11WorkAreaScreenFrame = screen.frame;
-      _x11WorkAreaScaleFactor = screen.scaleFactor;
-    }
-    if (isX11 && forMenu && !isFullscreen) {
-      _x11WorkArea = screen.visibleFrame;
-    }
-  }
-
-  Future<Rect?> _getEffectiveScreenFrame({
-    required window_size.Screen screen,
-    required bool isWayland,
-    required bool isX11,
-    required bool forMenu,
-  }) async {
-    Rect frameRect = screen.visibleFrame;
-    if (isMacOS && forMenu && isFullscreen) {
-      List<double>? workArea;
-      try {
-        workArea = await kMacOSPermChannel
-            .invokeListMethod<double>('getMacOSWorkAreaSize');
-      } catch (_) {
-        return null;
-      }
-      if (workArea == null || workArea.length != 2) {
-        return null;
-      }
-      frameRect = Rect.fromLTWH(
-        frameRect.left,
-        frameRect.top,
-        workArea[0] < frameRect.width ? workArea[0] : frameRect.width,
-        workArea[1] < frameRect.height ? workArea[1] : frameRect.height,
-      );
-    }
-    final x11WorkArea = _x11WorkArea;
-    if (isX11 &&
-        forMenu &&
-        isFullscreen &&
-        x11WorkArea != null &&
-        (x11WorkArea.width < frameRect.width ||
-            x11WorkArea.height < frameRect.height)) {
-      frameRect = x11WorkArea;
-    }
-    final screenScale = screen.scaleFactor;
-    if (isWayland && screenScale > 1.01) {
-      String monitorLayoutMode;
-      try {
-        monitorLayoutMode =
-            await bind.mainGetCommon(key: 'gnome-monitor-layout-mode');
-      } catch (_) {
-        monitorLayoutMode = '';
-      }
-      if (monitorLayoutMode == 'physical') {
-        frameRect = Rect.fromLTRB(
-          frameRect.left / screenScale,
-          frameRect.top / screenScale,
-          frameRect.right / screenScale,
-          frameRect.bottom / screenScale,
-        );
-      }
-    }
-    return frameRect;
-  }
-
-  Future<Rect?> _getAdjustedWindowFrame(Size mediaSize,
-      {bool forMenu = false}) async {
-    final screen = _screen;
-    if (screen != null) {
-      // Windows window frames use physical pixels while Flutter view sizes are
-      // logical. macOS and Linux window frames use the same units as Flutter.
-      double scale = isWindows ? screen.scaleFactor : 1.0;
-      final Rect wndRect;
-      try {
-        wndRect = await WindowController.fromWindowId(windowId).getFrame();
-      } catch (e) {
-        debugPrint("Failed to get frame of window $windowId, it may be hidden");
-        return null;
-      }
-      // On Windows, wndRect is GetWindowRect while mediaSize is GetClientRect.
+  doAdjustWindow(BuildContext context) async {
+    await updateScreen();
+    if (_screen != null) {
+      cbExitFullscreen();
+      double scale = _screen!.scaleFactor;
+      final wndRect = await WindowController.fromWindowId(windowId).getFrame();
+      final mediaSize = MediaQueryData.fromView(View.of(context)).size;
+      // On windows, wndRect is equal to GetWindowRect and mediaSize is equal to GetClientRect.
       // https://stackoverflow.com/a/7561083
       double magicWidth =
           wndRect.right - wndRect.left - mediaSize.width * scale;
       double magicHeight =
           wndRect.bottom - wndRect.top - mediaSize.height * scale;
       final canvasModel = ffi.canvasModel;
-      // canvasModel.scale is the rendered scale and already applies kIgnoreDpi.
-      // Use it instead of the remote source resolution.
-      final isWayland = isLinux && bind.mainCurrentIsWayland();
-      final isX11 = isLinux && !isWayland;
-      await _updateLinuxWorkAreaCache(
-        screen: screen,
-        wndRect: wndRect,
-        isWayland: isWayland,
-        isX11: isX11,
-        forMenu: forMenu,
-      );
-      if (isWindows && forMenu && isFullscreen) {
-        // desktop_multi_window's hidden title bar keeps 8 physical pixels on
-        // each horizontal edge and at the bottom, plus up to 1px at the top.
-        // Fullscreen removes these in WM_NCCALCSIZE, so predict the restored
-        // frame's worst-case padding when deciding whether to show the menu.
-        magicWidth = 16.0;
-        magicHeight = 9.0;
-      }
-      double horizontalEdges;
-      double verticalEdges;
-      if (forMenu && (isLinux || ((isMacOS || isWindows) && isFullscreen))) {
-        // Linux Adjust Window unmaximizes; macOS and Windows exit fullscreen
-        // before resizing. Predict the restored normal-window edges when
-        // deciding whether to show the menu item.
-        final resizePadding = isLinux && !kUseCompatibleUiMode
-            ? kDragToResizeAreaPaddingSize
-            : 0.0;
-        final windowEdge = kWindowBorderWidth + resizePadding;
-        horizontalEdges = windowEdge * 2;
-        verticalEdges = kDesktopRemoteTabBarHeight + windowEdge * 2;
-      } else {
-        horizontalEdges = CanvasModel.leftToEdge + CanvasModel.rightToEdge;
-        verticalEdges = CanvasModel.topToEdge + CanvasModel.bottomToEdge;
-      }
       final width = (canvasModel.getDisplayWidth() * canvasModel.scale +
-                  horizontalEdges) *
+                  CanvasModel.leftToEdge +
+                  CanvasModel.rightToEdge) *
               scale +
           magicWidth;
-      final height =
-          (canvasModel.getDisplayHeight() * canvasModel.scale + verticalEdges) *
-                  scale +
-              magicHeight;
+      final height = (canvasModel.getDisplayHeight() * canvasModel.scale +
+                  CanvasModel.topToEdge +
+                  CanvasModel.bottomToEdge) *
+              scale +
+          magicHeight;
       double left = wndRect.left + (wndRect.width - width) / 2;
       double top = wndRect.top + (wndRect.height - height) / 2;
 
-      final frameRect = await _getEffectiveScreenFrame(
-        screen: screen,
-        isWayland: isWayland,
-        isX11: isX11,
-        forMenu: forMenu,
-      );
-      if (frameRect == null) {
-        return null;
-      }
-      var availableSize = frameRect.size;
-      if (isWayland && forMenu && _waylandMaximizedWorkAreaSize != null) {
-        final cachedSize = _waylandMaximizedWorkAreaSize!;
-        availableSize = Size(
-          cachedSize.width < availableSize.width
-              ? cachedSize.width
-              : availableSize.width,
-          cachedSize.height < availableSize.height
-              ? cachedSize.height
-              : availableSize.height,
-        );
-      }
-      // A window frame cannot be smaller than its client area. Tolerate small
-      // floating-point differences; larger negative values mean the native
-      // frame and Flutter view metrics are not synchronized.
-      if (magicWidth < -0.1 || magicHeight < -0.1) {
-        return null;
-      }
-      // Reject implausibly small targets to avoid hiding the window.
-      if (width < 300 || height < 300) {
-        return null;
-      }
-      // The remote size may change after the menu is built. Reject targets
-      // that exceed the available area.
-      final exceedsScreen =
-          width > availableSize.width || height > availableSize.height;
-      if (exceedsScreen) {
-        return null;
+      Rect frameRect = _screen!.frame;
+      if (!isFullscreen) {
+        frameRect = _screen!.visibleFrame;
       }
       if (left < frameRect.left) {
         left = frameRect.left;
@@ -1584,101 +929,69 @@ class ScreenAdjustor {
       if ((top + height) > frameRect.bottom) {
         top = frameRect.bottom - height;
       }
-      return Rect.fromLTWH(left, top, width, height);
-    }
-    return null;
-  }
-
-  doAdjustWindow([BuildContext? context]) async {
-    // A resolution change is adjusted after a delay, when the menu context may
-    // already be disposed. Each desktop_multi_window window has its own engine,
-    // so that engine's first view is the current window.
-    final views = WidgetsBinding.instance.platformDispatcher.views;
-    if (context == null && views.isEmpty) {
-      return;
-    }
-    final view = context != null ? View.of(context) : views.first;
-    await updateScreen();
-    if (_screen != null) {
-      final wc = WindowController.fromWindowId(windowId);
-      final wasFullscreen = isFullscreen;
-      cbExitFullscreen();
-      if (wasFullscreen) {
-        // Wait for the native fullscreen exit to update the window frame.
-        await Future.delayed(Duration(milliseconds: 700));
-        await updateScreen();
-      }
-      if (isLinux) {
-        final isMaximized = await isWindowMaximized();
-        if (isMaximized == null) {
-          return;
-        }
-        if (isMaximized == true) {
-          // setFrame may be ignored while the native window is maximized.
-          try {
-            await wc.unmaximize();
-          } catch (_) {
-            return;
-          }
-          stateGlobal.setMaximized(false);
-          // Wait for the window manager and Flutter view metrics to reflect
-          // the restored window before calculating and setting its frame.
-          await Future.delayed(Duration(milliseconds: 300));
-          await updateScreen();
-        }
-      }
-      final mediaSize = MediaQueryData.fromView(view).size;
-      final frame = await _getAdjustedWindowFrame(mediaSize);
-      if (frame == null) {
-        return;
-      }
-      try {
-        await wc.setFrame(frame);
-      } catch (_) {
-        return;
-      }
+      await WindowController.fromWindowId(windowId)
+          .setFrame(Rect.fromLTWH(left, top, width, height));
       stateGlobal.setMaximized(false);
     }
   }
 
   updateScreen() async {
-    _screen = await _getCurrentScreen();
-  }
-
-  Future<window_size.Screen?> _getCurrentScreen() async {
-    try {
-      return (await window_size.getWindowInfo()).screen;
-    } catch (e) {
-      debugPrint('Failed to get current window screen: $e');
-      return null;
+    final String info =
+        isWeb ? screenInfo : await _getScreenInfoDesktop() ?? '';
+    if (info.isEmpty) {
+      _screen = null;
+    } else {
+      final screenMap = jsonDecode(info);
+      _screen = window_size.Screen(
+          Rect.fromLTRB(screenMap['frame']['l'], screenMap['frame']['t'],
+              screenMap['frame']['r'], screenMap['frame']['b']),
+          Rect.fromLTRB(
+              screenMap['visibleFrame']['l'],
+              screenMap['visibleFrame']['t'],
+              screenMap['visibleFrame']['r'],
+              screenMap['visibleFrame']['b']),
+          screenMap['scaleFactor']);
     }
   }
 
-  Future<bool> isWindowCanBeAdjusted([BuildContext? context]) async {
-    if (isWeb) {
-      return false;
-    }
-    // Capture the view before awaiting because the menu context may be disposed.
-    final views = WidgetsBinding.instance.platformDispatcher.views;
-    if (context == null && views.isEmpty) {
-      return false;
-    }
-    final view = context != null ? View.of(context) : views.first;
-    final mediaSize = MediaQueryData.fromView(view).size;
+  _getScreenInfoDesktop() async {
+    final v = await rustDeskWinManager.call(
+        WindowType.Main, kWindowGetWindowInfo, '');
+    return v.result;
+  }
+
+  Future<bool> isWindowCanBeAdjusted() async {
     final viewStyle =
         await bind.sessionGetViewStyle(sessionId: ffi.sessionId) ?? '';
     if (viewStyle != kRemoteViewStyleOriginal) {
       return false;
     }
-    final remoteCount = RemoteCountState.find().value;
-    if (remoteCount != 1) {
-      return false;
+    if (!isWeb) {
+      final remoteCount = RemoteCountState.find().value;
+      if (remoteCount != 1) {
+        return false;
+      }
     }
-    await updateScreen();
     if (_screen == null) {
       return false;
     }
-    return await _getAdjustedWindowFrame(mediaSize, forMenu: true) != null;
+    final scale = kIgnoreDpi ? 1.0 : _screen!.scaleFactor;
+    double selfWidth = _screen!.visibleFrame.width;
+    double selfHeight = _screen!.visibleFrame.height;
+    if (isFullscreen) {
+      selfWidth = _screen!.frame.width;
+      selfHeight = _screen!.frame.height;
+    }
+
+    final canvasModel = ffi.canvasModel;
+    final displayWidth = canvasModel.getDisplayWidth();
+    final displayHeight = canvasModel.getDisplayHeight();
+    final requiredWidth =
+        CanvasModel.leftToEdge + displayWidth + CanvasModel.rightToEdge;
+    final requiredHeight =
+        CanvasModel.topToEdge + displayHeight + CanvasModel.bottomToEdge;
+    return selfWidth > (requiredWidth * scale) &&
+        selfHeight > (requiredHeight * scale);
   }
 }
 
@@ -1687,18 +1000,26 @@ class _DisplayMenu extends StatefulWidget {
   final FFI ffi;
   final ToolbarState state;
   final Function(bool) setFullscreen;
-  const _DisplayMenu(
-      {required this.id,
+  final Widget pluginItem;
+  _DisplayMenu(
+      {Key? key,
+      required this.id,
       required this.ffi,
       required this.state,
-      required this.setFullscreen});
+      required this.setFullscreen})
+      : pluginItem = LocationItem.createLocationItem(
+          id,
+          ffi,
+          kLocationClientRemoteToolbarDisplay,
+          true,
+        ),
+        super(key: key);
 
   @override
   State<_DisplayMenu> createState() => _DisplayMenuState();
 }
 
 class _DisplayMenuState extends State<_DisplayMenu> {
-  final RxInt _customPercent = 100.obs;
   late final ScreenAdjustor _screenAdjustor = ScreenAdjustor(
     id: widget.id,
     ffi: widget.ffi,
@@ -1713,50 +1034,33 @@ class _DisplayMenuState extends State<_DisplayMenu> {
   String get id => widget.id;
 
   @override
-  void initState() {
-    super.initState();
-    // Initialize custom percent from stored option once
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      try {
-        final v = await getSessionCustomScalePercent(widget.ffi.sessionId);
-        if (_customPercent.value != v) {
-          _customPercent.value = v;
-        }
-      } catch (_) {}
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    menuChildrenGetter(_IconSubmenuButtonState state) {
+    _screenAdjustor.updateScreen();
+    menuChildrenGetter() {
       final menuChildren = <Widget>[
         _screenAdjustor.adjustWindow(context),
-        viewStyle(customPercent: _customPercent),
-        scrollStyle(state, colorScheme),
+        viewStyle(),
+        scrollStyle(),
         imageQuality(),
         codec(),
-        if (ffi.connType == ConnType.defaultConn)
-          _ResolutionsMenu(
-            id: widget.id,
-            ffi: widget.ffi,
-            screenAdjustor: _screenAdjustor,
-          ),
-        if (showVirtualDisplayMenu(ffi) && ffi.connType == ConnType.defaultConn)
+        _ResolutionsMenu(
+          id: widget.id,
+          ffi: widget.ffi,
+          screenAdjustor: _screenAdjustor,
+        ),
+        if (showVirtualDisplayMenu(ffi))
           _SubmenuButton(
             ffi: widget.ffi,
             menuChildren: getVirtualDisplayMenuChildren(ffi, id, null),
             child: Text(translate("Virtual display")),
           ),
-        if (ffi.connType == ConnType.defaultConn) cursorToggles(),
+        cursorToggles(),
         Divider(),
         toggles(),
       ];
       // privacy mode
-      final privacyModeState = PrivacyModeState.find(id);
-      if (ffi.connType == ConnType.defaultConn &&
-          (pi.features.privacyMode || privacyModeState.isNotEmpty) &&
-          (ffiModel.keyboard || privacyModeState.isNotEmpty)) {
+      if (ffiModel.keyboard && pi.features.privacyMode) {
+        final privacyModeState = PrivacyModeState.find(id);
         final privacyModeList =
             toolbarPrivacyMode(privacyModeState, context, id, ffi);
         if (privacyModeList.length == 1) {
@@ -1781,6 +1085,7 @@ class _DisplayMenuState extends State<_DisplayMenu> {
           ]);
         }
       }
+      menuChildren.add(widget.pluginItem);
       return menuChildren;
     }
 
@@ -1794,146 +1099,62 @@ class _DisplayMenuState extends State<_DisplayMenu> {
     );
   }
 
-  viewStyle({required RxInt customPercent}) {
+  viewStyle() {
     return futureBuilder(
         future: toolbarViewStyle(context, widget.id, widget.ffi),
         hasData: (data) {
           final v = data as List<TRadioMenu<String>>;
-          final bool isCustomSelected = v.isNotEmpty
-              ? v.first.groupValue == kRemoteViewStyleCustom
-              : false;
           return Column(children: [
-            ...v.map((e) {
-              final isCustom = e.value == kRemoteViewStyleCustom;
-              final child =
-                  isCustom ? Text(translate('Scale custom')) : e.child;
-              // Whether the current selection is already custom
-              final bool isGroupCustomSelected =
-                  e.groupValue == kRemoteViewStyleCustom;
-              // Keep menu open when switching INTO custom so the slider is visible immediately
-              final bool keepOpenForThisItem =
-                  isCustom && !isGroupCustomSelected;
-              return RdoMenuButton<String>(
-                  value: e.value,
-                  groupValue: e.groupValue,
-                  onChanged: (value) {
-                    // Perform the original change
-                    e.onChanged?.call(value);
-                    // Only force a rebuild when we keep the menu open to reveal the slider
-                    if (keepOpenForThisItem) {
-                      setState(() {});
-                    }
-                  },
-                  child: child,
-                  ffi: ffi,
-                  // When entering custom, keep submenu open to show the slider controls
-                  closeOnActivate: !keepOpenForThisItem);
-            }).toList(),
-            // Only show a divider when custom is NOT selected
-            if (!isCustomSelected) Divider(),
-            _customControlsIfCustomSelected(
-                onChanged: (v) => customPercent.value = v),
+            ...v
+                .map((e) => RdoMenuButton<String>(
+                    value: e.value,
+                    groupValue: e.groupValue,
+                    onChanged: e.onChanged,
+                    child: e.child,
+                    ffi: ffi))
+                .toList(),
+            Divider(),
           ]);
         });
   }
 
-  Widget _customControlsIfCustomSelected({ValueChanged<int>? onChanged}) {
-    return futureBuilder(future: () async {
-      final current = await bind.sessionGetViewStyle(sessionId: ffi.sessionId);
-      return current == kRemoteViewStyleCustom;
-    }(), hasData: (data) {
-      final isCustom = data as bool;
-      return AnimatedSwitcher(
-        duration: Duration(milliseconds: 220),
-        switchInCurve: Curves.easeOut,
-        switchOutCurve: Curves.easeIn,
-        child: isCustom
-            ? _CustomScaleMenuControls(ffi: ffi, onChanged: onChanged)
-            : SizedBox.shrink(),
-      );
-    });
-  }
-
-  scrollStyle(_IconSubmenuButtonState state, ColorScheme colorScheme) {
+  scrollStyle() {
     return futureBuilder(future: () async {
       final viewStyle =
           await bind.sessionGetViewStyle(sessionId: ffi.sessionId) ?? '';
-      final visible = viewStyle == kRemoteViewStyleOriginal ||
-          viewStyle == kRemoteViewStyleCustom;
+      final visible = viewStyle == kRemoteViewStyleOriginal;
       final scrollStyle =
           await bind.sessionGetScrollStyle(sessionId: ffi.sessionId) ?? '';
-      final edgeScrollEdgeThickness = await bind
-          .sessionGetEdgeScrollEdgeThickness(sessionId: ffi.sessionId);
-      return {
-        'visible': visible,
-        'scrollStyle': scrollStyle,
-        'edgeScrollEdgeThickness': edgeScrollEdgeThickness,
-      };
+      return {'visible': visible, 'scrollStyle': scrollStyle};
     }(), hasData: (data) {
       final visible = data['visible'] as bool;
       if (!visible) return Offstage();
       final groupValue = data['scrollStyle'] as String;
-      final edgeScrollEdgeThickness = data['edgeScrollEdgeThickness'] as int;
-
-      onChangeScrollStyle(String? value) async {
+      onChange(String? value) async {
         if (value == null) return;
         await bind.sessionSetScrollStyle(
             sessionId: ffi.sessionId, value: value);
         widget.ffi.canvasModel.updateScrollStyle();
-        state.setState(() {});
       }
 
-      onChangeEdgeScrollEdgeThickness(double? value) async {
-        if (value == null) return;
-        final newThickness = value.round();
-        await bind.sessionSetEdgeScrollEdgeThickness(
-            sessionId: ffi.sessionId, value: newThickness);
-        widget.ffi.canvasModel.updateEdgeScrollEdgeThickness(newThickness);
-        state.setState(() {});
-      }
-
-      return Obx(() => Column(children: [
-            RdoMenuButton<String>(
-              child: Text(translate('ScrollAuto')),
-              value: kRemoteScrollStyleAuto,
-              groupValue: groupValue,
-              onChanged: widget.ffi.canvasModel.imageOverflow.value
-                  ? (value) => onChangeScrollStyle(value)
-                  : null,
-              closeOnActivate: groupValue != kRemoteScrollStyleEdge,
-              ffi: widget.ffi,
-            ),
-            RdoMenuButton<String>(
-              child: Text(translate('Scrollbar')),
-              value: kRemoteScrollStyleBar,
-              groupValue: groupValue,
-              onChanged: widget.ffi.canvasModel.imageOverflow.value
-                  ? (value) => onChangeScrollStyle(value)
-                  : null,
-              closeOnActivate: groupValue != kRemoteScrollStyleEdge,
-              ffi: widget.ffi,
-            ),
-            if (!isWeb) ...[
-              RdoMenuButton<String>(
-                child: Text(translate('ScrollEdge')),
-                value: kRemoteScrollStyleEdge,
-                groupValue: groupValue,
-                closeOnActivate: false,
-                onChanged: widget.ffi.canvasModel.imageOverflow.value
-                    ? (value) => onChangeScrollStyle(value)
-                    : null,
-                ffi: widget.ffi,
-              ),
-              Offstage(
-                  offstage: groupValue != kRemoteScrollStyleEdge,
-                  child: EdgeThicknessControl(
-                    value: edgeScrollEdgeThickness.toDouble(),
-                    onChanged: onChangeEdgeScrollEdgeThickness,
-                    colorScheme: colorScheme,
-                  )),
-            ],
-            Divider(),
-          ]));
+      final enabled = widget.ffi.canvasModel.imageOverflow.value;
+      return Column(children: [
+        RdoMenuButton<String>(
+          child: Text(translate('ScrollAuto')),
+          value: kRemoteScrollStyleAuto,
+          groupValue: groupValue,
+          onChanged: enabled ? (value) => onChange(value) : null,
+          ffi: widget.ffi,
+        ),
+        RdoMenuButton<String>(
+          child: Text(translate('Scrollbar')),
+          value: kRemoteScrollStyleBar,
+          groupValue: groupValue,
+          onChanged: enabled ? (value) => onChange(value) : null,
+          ffi: widget.ffi,
+        ),
+        Divider(),
+      ]);
     });
   }
 
@@ -2012,178 +1233,6 @@ class _DisplayMenuState extends State<_DisplayMenu> {
                       ffi: ffi))
                   .toList());
         });
-  }
-}
-
-class _CustomScaleMenuControls extends StatefulWidget {
-  final FFI ffi;
-  final ValueChanged<int>? onChanged;
-  const _CustomScaleMenuControls({Key? key, required this.ffi, this.onChanged})
-      : super(key: key);
-
-  @override
-  State<_CustomScaleMenuControls> createState() =>
-      _CustomScaleMenuControlsState();
-}
-
-class _CustomScaleMenuControlsState
-    extends CustomScaleControls<_CustomScaleMenuControls> {
-  @override
-  FFI get ffi => widget.ffi;
-
-  @override
-  ValueChanged<int>? get onScaleChanged => widget.onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    const smallBtnConstraints = BoxConstraints(minWidth: 28, minHeight: 28);
-
-    final sliderControl = Semantics(
-      label: translate('Custom scale slider'),
-      value: '$scaleValue%',
-      child: SliderTheme(
-        data: SliderTheme.of(context).copyWith(
-          activeTrackColor: colorScheme.primary,
-          thumbColor: colorScheme.primary,
-          overlayColor: colorScheme.primary.withOpacity(0.1),
-          showValueIndicator: ShowValueIndicator.never,
-          thumbShape: _RectValueThumbShape(
-            min: CustomScaleControls.minPercent.toDouble(),
-            max: CustomScaleControls.maxPercent.toDouble(),
-            width: 52,
-            height: 24,
-            radius: 4,
-            displayValueForNormalized: (t) => mapPosToPercent(t),
-          ),
-        ),
-        child: Slider(
-          value: scalePos,
-          min: 0.0,
-          max: 1.0,
-          // Use a wide range of divisions (calculated as (CustomScaleControls.maxPercent - CustomScaleControls.minPercent)) to provide ~1% precision increments.
-          // This allows users to set precise scale values. Lower values would require more fine-tuning via the +/- buttons, which is undesirable for big ranges.
-          divisions:
-              (CustomScaleControls.maxPercent - CustomScaleControls.minPercent)
-                  .round(),
-          onChanged: onSliderChanged,
-        ),
-      ),
-    );
-
-    return Column(children: [
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12.0),
-        child: Row(children: [
-          Tooltip(
-            message: translate('Decrease'),
-            child: IconButton(
-              iconSize: 16,
-              padding: EdgeInsets.all(1),
-              constraints: smallBtnConstraints,
-              icon: const Icon(Icons.remove),
-              onPressed: () => nudgeScale(-1),
-            ),
-          ),
-          Expanded(child: sliderControl),
-          Tooltip(
-            message: translate('Increase'),
-            child: IconButton(
-              iconSize: 16,
-              padding: EdgeInsets.all(1),
-              constraints: smallBtnConstraints,
-              icon: const Icon(Icons.add),
-              onPressed: () => nudgeScale(1),
-            ),
-          ),
-        ]),
-      ),
-      Divider(),
-    ]);
-  }
-}
-
-// Lightweight rectangular thumb that paints the current percentage.
-// Stateless and uses only SliderTheme colors; avoids allocations beyond a TextPainter per frame.
-class _RectValueThumbShape extends SliderComponentShape {
-  final double min;
-  final double max;
-  final double width;
-  final double height;
-  final double radius;
-  final String unit;
-  // Optional mapper to compute display value from normalized position [0,1]
-  // If null, falls back to linear interpolation between min and max.
-  final int Function(double normalized)? displayValueForNormalized;
-
-  const _RectValueThumbShape({
-    required this.min,
-    required this.max,
-    required this.width,
-    required this.height,
-    required this.radius,
-    this.displayValueForNormalized,
-    this.unit = '%',
-  });
-
-  @override
-  Size getPreferredSize(bool isEnabled, bool isDiscrete) {
-    return Size(width, height);
-  }
-
-  @override
-  void paint(
-    PaintingContext context,
-    Offset center, {
-    required Animation<double> activationAnimation,
-    required Animation<double> enableAnimation,
-    required bool isDiscrete,
-    required TextPainter labelPainter,
-    required RenderBox parentBox,
-    required SliderThemeData sliderTheme,
-    required TextDirection textDirection,
-    required double value,
-    required double textScaleFactor,
-    required Size sizeWithOverflow,
-  }) {
-    final Canvas canvas = context.canvas;
-
-    // Resolve color based on enabled/disabled animation, with safe fallbacks.
-    final ColorTween colorTween = ColorTween(
-      begin: sliderTheme.disabledThumbColor,
-      end: sliderTheme.thumbColor,
-    );
-    final Color? evaluatedColor = colorTween.evaluate(enableAnimation);
-    final Color? thumbColor = sliderTheme.thumbColor;
-    final Color fillColor = evaluatedColor ?? thumbColor ?? Colors.blueAccent;
-
-    final RRect rrect = RRect.fromRectAndRadius(
-      Rect.fromCenter(center: center, width: width, height: height),
-      Radius.circular(radius),
-    );
-    final Paint paint = Paint()..color = fillColor;
-    canvas.drawRRect(rrect, paint);
-
-    // Compute displayed value from normalized slider value.
-    final int displayValue = displayValueForNormalized != null
-        ? displayValueForNormalized!(value)
-        : (min + value * (max - min)).round();
-    final TextSpan span = TextSpan(
-      text: '$displayValue$unit',
-      style: const TextStyle(
-        color: Colors.white,
-        fontSize: 12,
-        fontWeight: FontWeight.w600,
-      ),
-    );
-    final TextPainter tp = TextPainter(
-      text: span,
-      textAlign: TextAlign.center,
-      textDirection: textDirection,
-    );
-    tp.layout(maxWidth: width - 4);
-    tp.paint(
-        canvas, Offset(center.dx - tp.width / 2, center.dy - tp.height / 2));
   }
 }
 
@@ -2292,19 +1341,15 @@ class _ResolutionsMenuState extends State<_ResolutionsMenu> {
 
   Future<void> _getLocalResolutionWayland() async {
     if (!isWayland) return _getLocalResolution();
-    try {
-      final window = await window_size.getWindowInfo();
-      final screen = window.screen;
-      if (screen != null) {
-        setState(() {
-          _localResolution = Resolution(
-            screen.frame.width.toInt(),
-            screen.frame.height.toInt(),
-          );
-        });
-      }
-    } catch (e) {
-      debugPrint('Failed to get local resolution on Wayland: $e');
+    final window = await window_size.getWindowInfo();
+    final screen = window.screen;
+    if (screen != null) {
+      setState(() {
+        _localResolution = Resolution(
+          screen.frame.width.toInt(),
+          screen.frame.height.toInt(),
+        );
+      });
     }
   }
 
@@ -2376,16 +1421,8 @@ class _ResolutionsMenuState extends State<_ResolutionsMenu> {
         return;
       }
       if (w == rect.width.toInt() && h == rect.height.toInt()) {
-        if (!await widget.screenAdjustor.isWindowCanBeAdjusted()) {
-          return;
-        }
-        if (widget.screenAdjustor.isFullscreen) {
-          return;
-        }
-        if ((await widget.screenAdjustor.isWindowMaximized()) == false) {
-          // This delayed callback can outlive the menu State, so its context
-          // is unsafe.
-          widget.screenAdjustor.doAdjustWindow();
+        if (await widget.screenAdjustor.isWindowCanBeAdjusted()) {
+          widget.screenAdjustor.doAdjustWindow(context);
         }
       }
     });
@@ -2531,57 +1568,26 @@ class _KeyboardMenu extends StatelessWidget {
   Widget build(BuildContext context) {
     var ffiModel = Provider.of<FfiModel>(context);
     if (!ffiModel.keyboard) return Offstage();
-    toolbarToggles() {
-      final toggles = toolbarKeyboardToggles(ffi)
-          .map((e) => CkbMenuButton(
-              value: e.value,
-              onChanged: e.onChanged,
-              child: e.child,
-              ffi: ffi) as Widget)
-          .toList();
-      if (toggles.isNotEmpty) {
-        toggles.add(Divider());
-      }
-      return toggles;
-    }
-
+    toolbarToggles() => toolbarKeyboardToggles(ffi)
+        .map((e) => CkbMenuButton(
+            value: e.value, onChanged: e.onChanged, child: e.child, ffi: ffi))
+        .toList();
     return _IconSubmenuButton(
         tooltip: 'Keyboard Settings',
-        svg: "assets/keyboard_mouse.svg",
+        svg: "assets/keyboard.svg",
         ffi: ffi,
         color: _ToolbarTheme.blueColor,
         hoverColor: _ToolbarTheme.hoverBlueColor,
-        menuChildrenGetter: (_) => [
+        menuChildrenGetter: () => [
               keyboardMode(),
               localKeyboardType(),
               inputSource(),
               Divider(),
               viewMode(),
-              if ([kPeerPlatformWindows, kPeerPlatformMacOS, kPeerPlatformLinux]
-                  .contains(pi.platform))
-                showMyCursor(),
               Divider(),
               ...toolbarToggles(),
-              ...mouseSpeed(),
               ...mobileActions(),
             ]);
-  }
-
-  mouseSpeed() {
-    final speedWidgets = [];
-    final sessionId = ffi.sessionId;
-    if (isDesktop) {
-      if (ffi.ffiModel.keyboard) {
-        final enabled = !ffi.ffiModel.viewOnly;
-        final trackpad = MenuButton(
-          child: Text(translate('Trackpad speed')).paddingOnly(left: 26.0),
-          onPressed: enabled ? () => trackpadSpeedDialog(sessionId, ffi) : null,
-          ffi: ffi,
-        );
-        speedWidgets.add(trackpad);
-      }
-    }
-    return speedWidgets;
   }
 
   keyboardMode() {
@@ -2692,8 +1698,6 @@ class _KeyboardMenu extends StatelessWidget {
             ? (v) async {
                 if (v != null) {
                   await stateGlobal.setInputSource(ffi.sessionId, v);
-                  // Release native input; see the macOS trade-offs in RemotePage.
-                  if (isMacOS) ffi.inputModel.enterOrLeave(false);
                   await ffi.ffiModel.checkDesktopKeyboardMode();
                   await ffi.inputModel.updateKeyboardMode();
                 }
@@ -2718,41 +1722,10 @@ class _KeyboardMenu extends StatelessWidget {
                 final viewOnly = await bind.sessionGetToggleOption(
                     sessionId: ffi.sessionId, arg: kOptionToggleViewOnly);
                 ffiModel.setViewOnly(id, viewOnly ?? value);
-                final showMyCursor = await bind.sessionGetToggleOption(
-                    sessionId: ffi.sessionId, arg: kOptionToggleShowMyCursor);
-                ffiModel.setShowMyCursor(showMyCursor ?? value);
               }
             : null,
         ffi: ffi,
         child: Text(translate('View Mode')));
-  }
-
-  showMyCursor() {
-    final ffiModel = ffi.ffiModel;
-    return CkbMenuButton(
-            value: ffiModel.showMyCursor,
-            onChanged: (value) async {
-              if (value == null) return;
-              await bind.sessionToggleOption(
-                  sessionId: ffi.sessionId, value: kOptionToggleShowMyCursor);
-              final showMyCursor = await bind.sessionGetToggleOption(
-                      sessionId: ffi.sessionId,
-                      arg: kOptionToggleShowMyCursor) ??
-                  value;
-              ffiModel.setShowMyCursor(showMyCursor);
-
-              // Also set view only if showMyCursor is enabled and viewOnly is not enabled.
-              if (showMyCursor && !ffiModel.viewOnly) {
-                await bind.sessionToggleOption(
-                    sessionId: ffi.sessionId, value: kOptionToggleViewOnly);
-                final viewOnly = await bind.sessionGetToggleOption(
-                    sessionId: ffi.sessionId, arg: kOptionToggleViewOnly);
-                ffiModel.setViewOnly(id, viewOnly ?? value);
-              }
-            },
-            ffi: ffi,
-            child: Text(translate('Show my cursor')))
-        .paddingOnly(left: 26.0);
   }
 
   mobileActions() {
@@ -2818,7 +1791,7 @@ class _ChatMenuState extends State<_ChatMenu> {
           ffi: widget.ffi,
           color: _ToolbarTheme.blueColor,
           hoverColor: _ToolbarTheme.hoverBlueColor,
-          menuChildrenGetter: (_) => [textChat(), voiceCall()]);
+          menuChildrenGetter: () => [textChat(), voiceCall()]);
     }
   }
 
@@ -2874,7 +1847,7 @@ class _VoiceCallMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    menuChildrenGetter(_IconSubmenuButtonState state) {
+    menuChildrenGetter() {
       final audioInput = AudioInput(
         builder: (devices, currentDevice, setDevice) {
           return Column(
@@ -2950,9 +1923,7 @@ class _RecordMenu extends StatelessWidget {
   Widget build(BuildContext context) {
     var ffi = Provider.of<FfiModel>(context);
     var recordingModel = Provider.of<RecordingModel>(context);
-    final hideRecordingButton =
-        bind.mainGetLocalOption(key: kOptionHideRecordingButton) == 'Y';
-    final visible = !hideRecordingButton &&
+    final visible =
         (recordingModel.start || ffi.permissions['recording'] != false);
     if (!visible) return Offstage();
     return _IconMenuButton(
@@ -2982,12 +1953,7 @@ class _CloseMenu extends StatelessWidget {
     return _IconMenuButton(
       assetName: 'assets/close.svg',
       tooltip: 'Close',
-      onPressed: () async {
-        if (await showConnEndAuditDialogCloseCanceled(ffi: ffi)) {
-          return;
-        }
-        closeConnection(id: id);
-      },
+      onPressed: () => closeConnection(id: id),
       color: _ToolbarTheme.redColor,
       hoverColor: _ToolbarTheme.hoverRedColor,
     );
@@ -3064,7 +2030,7 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
         horizontal: widget.hMargin ?? _ToolbarTheme.buttonHMargin,
         vertical: widget.vMargin ?? _ToolbarTheme.buttonVMargin);
     button = Tooltip(
-      message: translate(widget.tooltip),
+      message: widget.tooltip,
       child: button,
     );
     if (widget.topLevel) {
@@ -3081,7 +2047,7 @@ class _IconSubmenuButton extends StatefulWidget {
   final Widget? icon;
   final Color color;
   final Color hoverColor;
-  final List<Widget> Function(_IconSubmenuButtonState state) menuChildrenGetter;
+  final List<Widget> Function() menuChildrenGetter;
   final MenuStyle? menuStyle;
   final FFI? ffi;
   final double? width;
@@ -3105,11 +2071,6 @@ class _IconSubmenuButton extends StatefulWidget {
 
 class _IconSubmenuButtonState extends State<_IconSubmenuButton> {
   bool hover = false;
-
-  @override // discard @protected
-  void setState(VoidCallback fn) {
-    super.setState(fn);
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -3143,7 +2104,7 @@ class _IconSubmenuButtonState extends State<_IconSubmenuButton> {
                         ),
                         child: icon))),
             menuChildren: widget
-                .menuChildrenGetter(this)
+                .menuChildrenGetter()
                 .map((e) => _buildPointerTrackWidget(e, widget.ffi))
                 .toList()));
     return MenuBar(children: [
@@ -3244,8 +2205,6 @@ class RdoMenuButton<T> extends StatelessWidget {
   final ValueChanged<T?>? onChanged;
   final Widget? child;
   final FFI? ffi;
-  // When true, submenu will be dismissed on activate; when false, it stays open.
-  final bool closeOnActivate;
   const RdoMenuButton({
     Key? key,
     required this.value,
@@ -3253,7 +2212,6 @@ class RdoMenuButton<T> extends StatelessWidget {
     required this.child,
     this.ffi,
     this.onChanged,
-    this.closeOnActivate = true,
   }) : super(key: key);
 
   @override
@@ -3262,10 +2220,9 @@ class RdoMenuButton<T> extends StatelessWidget {
       value: value,
       groupValue: groupValue,
       child: child,
-      closeOnActivate: closeOnActivate,
       onChanged: onChanged != null
           ? (T? value) {
-              if (ffi != null && closeOnActivate) {
+              if (ffi != null) {
                 _menuDismissCallback(ffi!);
               }
               onChanged?.call(value);
@@ -3277,20 +2234,8 @@ class RdoMenuButton<T> extends StatelessWidget {
 
 class _DraggableShowHide extends StatefulWidget {
   final String id;
-  final FFI ffi;
   final SessionID sessionId;
-  final RxDouble fraction;
-  final Rx<_ToolbarEdge> edge;
-  final Rxn<_ToolbarEdge> previewEdge;
-  final Rxn<double> previewFraction;
-  final Rxn<Size> toolbarSize;
-  final VoidCallback markDragEpoch;
-  final VoidCallback syncDockingOptionsAfterDragIfNeeded;
-  final bool isHorizontal;
-  // Whether multi-edge docking is enabled for this session (toggled in
-  // Settings -> Other). When false, the drag handle slides the toolbar
-  // horizontally on the top edge and never switches edges.
-  final bool multiEdgeEnabled;
+  final RxDouble fractionX;
   final RxBool dragging;
   final ToolbarState toolbarState;
   final BorderRadius borderRadius;
@@ -3301,17 +2246,8 @@ class _DraggableShowHide extends StatefulWidget {
   const _DraggableShowHide({
     Key? key,
     required this.id,
-    required this.ffi,
     required this.sessionId,
-    required this.fraction,
-    required this.edge,
-    required this.previewEdge,
-    required this.previewFraction,
-    required this.toolbarSize,
-    required this.markDragEpoch,
-    required this.syncDockingOptionsAfterDragIfNeeded,
-    required this.isHorizontal,
-    required this.multiEdgeEnabled,
+    required this.fractionX,
     required this.dragging,
     required this.toolbarState,
     required this.setFullscreen,
@@ -3324,14 +2260,12 @@ class _DraggableShowHide extends StatefulWidget {
 }
 
 class _DraggableShowHideState extends State<_DraggableShowHide> {
+  Offset position = Offset.zero;
+  Size size = Size.zero;
   double left = 0.0;
   double right = 1.0;
-  Offset? _lastPointerDown;
-  Offset? _dragGrabOffset;
-  double? _dragLongAxisGrabOffset;
-  Size? _dragToolbarSize;
 
-  RxBool get collapse => widget.toolbarState.collapse;
+  RxBool get show => widget.toolbarState.show;
 
   @override
   initState() {
@@ -3355,174 +2289,41 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
     }
   }
 
-  // Bias applied to the currently-previewed edge so a drag hovering between
-  // two edges doesn't flicker. Only relevant when multi-edge is enabled.
-  static const double _switchHysteresisPx = 50.0;
-
-  _ToolbarEdge _nearestToolbarEdge(Offset cursor, Size mediaSize) {
-    if (!widget.multiEdgeEnabled) return widget.edge.value;
-
-    double rawDist(_ToolbarEdge e) {
-      switch (e) {
-        case _ToolbarEdge.top:
-          return cursor.dy;
-        case _ToolbarEdge.bottom:
-          return mediaSize.height - cursor.dy;
-        case _ToolbarEdge.left:
-          return cursor.dx;
-        case _ToolbarEdge.right:
-          return mediaSize.width - cursor.dx;
-      }
-    }
-
-    final previewed = widget.previewEdge.value;
-    var winner = widget.edge.value;
-    var best = double.infinity;
-    for (final e in _ToolbarEdge.values) {
-      final biased =
-          e == previewed ? rawDist(e) - _switchHysteresisPx : rawDist(e);
-      if (biased < best) {
-        best = biased;
-        winner = e;
-      }
-    }
-    return winner;
-  }
-
-  void _ensureDragGrabOffset(Offset cursor) {
-    if (_dragGrabOffset != null) return;
-    final mediaSize = MediaQueryData.fromView(View.of(context)).size;
-    final toolbarSize =
-        _toolbarSizeForEdge(widget.edge.value, widget.toolbarSize.value);
-    _dragToolbarSize = toolbarSize;
-    final toolbarOffset = _toolbarOffsetForEdge(
-      edge: widget.edge.value,
-      fraction: widget.fraction.value,
-      parentSize: mediaSize,
-      toolbarSize: toolbarSize,
-    );
-    _dragGrabOffset = cursor - toolbarOffset;
-    _dragLongAxisGrabOffset = _isHorizontalEdge(widget.edge.value)
-        ? _dragGrabOffset?.dx
-        : _dragGrabOffset?.dy;
-  }
-
-  double _dragGrabOffsetForEdge(_ToolbarEdge edge, Size toolbarSize) {
-    final offset = _dragLongAxisGrabOffset ?? 0;
-    final extent =
-        _isHorizontalEdge(edge) ? toolbarSize.width : toolbarSize.height;
-    return _clampToolbarFraction(offset, 0, extent);
-  }
-
-  void _updatePreview(Offset cursor) {
-    _ensureDragGrabOffset(cursor);
-    final mediaSize = MediaQueryData.fromView(View.of(context)).size;
-    final winner = _nearestToolbarEdge(cursor, mediaSize);
-    widget.previewEdge.value = winner;
-
-    final toolbarSize = _toolbarSizeForEdge(winner, _dragToolbarSize);
-    final grabOffset = _dragGrabOffsetForEdge(winner, toolbarSize);
-    final double frac;
-    if (winner == _ToolbarEdge.top || winner == _ToolbarEdge.bottom) {
-      frac = _fractionForAlignedDrag(
-        cursor: cursor.dx,
-        grabOffset: grabOffset,
-        parentExtent: mediaSize.width,
-        toolbarExtent: toolbarSize.width,
-        left: left,
-        right: right,
-      );
-    } else {
-      final fractionBounds = _fractionBoundsForEdge(winner, left, right);
-      frac = _fractionForAlignedDrag(
-        cursor: cursor.dy,
-        grabOffset: grabOffset,
-        parentExtent: mediaSize.height,
-        toolbarExtent: toolbarSize.height,
-        left: fractionBounds.left,
-        right: fractionBounds.right,
-      );
-    }
-    widget.previewFraction.value = frac;
-  }
-
-  void _resetDragTracking() {
-    _lastPointerDown = null;
-    _dragGrabOffset = null;
-    _dragLongAxisGrabOffset = null;
-    _dragToolbarSize = null;
-  }
-
-  void _commitPreview() {
-    final newEdge = widget.previewEdge.value;
-    final frac = widget.previewFraction.value;
-    widget.previewEdge.value = null;
-    widget.previewFraction.value = null;
-    widget.dragging.value = false;
-    widget.markDragEpoch();
-    _resetDragTracking();
-    widget.syncDockingOptionsAfterDragIfNeeded();
-    if (newEdge == null || frac == null) return;
-    widget.edge.value = newEdge;
-    widget.fraction.value = frac;
-    _cacheToolbarDockingOptions(
-      sessionId: widget.sessionId,
-      edge: newEdge,
-      fraction: frac,
-      multiEdgeEnabled: widget.multiEdgeEnabled,
-    );
-    bind.sessionPeerOption(
-      sessionId: widget.sessionId,
-      name: kOptionRemoteMenubarEdge,
-      value: _toolbarEdgeToString(newEdge),
-    );
-    bind.sessionPeerOption(
-      sessionId: widget.sessionId,
-      name: kOptionRemoteMenubarFraction,
-      value: frac.toString(),
-    );
-    if (widget.multiEdgeEnabled) {
-      return;
-    }
-    bind.sessionPeerOption(
-      sessionId: widget.sessionId,
-      name: _legacyRemoteMenubarDragX,
-      value: frac.toString(),
-    );
-  }
-
   Widget _buildDraggable(BuildContext context) {
-    return Listener(
-      onPointerDown: (event) => _lastPointerDown = event.position,
-      child: Draggable(
-        // When multi-edge docking is off the toolbar stays on the top edge,
-        // so lock the feedback to horizontal motion — otherwise the handle
-        // floats away from the top while dragging and the toolbar looks
-        // unmoored. When multi-edge is on we need 2D drag for snap-to-edge.
-        axis: widget.multiEdgeEnabled ? null : Axis.horizontal,
-        child: Icon(
-          widget.isHorizontal ? Icons.drag_indicator : Icons.drag_handle,
-          size: 20,
-          color: MyTheme.color(context).drag_indicator,
-        ),
-        feedback: widget,
-        onDragStarted: () {
-          widget.markDragEpoch();
-          final pointerDown = _lastPointerDown;
-          if (pointerDown != null) {
-            _ensureDragGrabOffset(pointerDown);
-          }
-          widget.dragging.value = true;
-          // Seed the preview at the current docked edge/fraction so something
-          // shows the instant the drag begins, before the first onDragUpdate.
-          widget.previewEdge.value = widget.edge.value;
-          widget.previewFraction.value = widget.fraction.value;
-        },
-        onDragUpdate: (details) {
-          _updatePreview(details.globalPosition);
-        },
-        onDragEnd: (_) => _commitPreview(),
+    return Draggable(
+      axis: Axis.horizontal,
+      child: Icon(
+        Icons.drag_indicator,
+        size: 20,
+        color: MyTheme.color(context).drag_indicator,
       ),
+      feedback: widget,
+      onDragStarted: (() {
+        final RenderObject? renderObj = context.findRenderObject();
+        if (renderObj != null) {
+          final RenderBox renderBox = renderObj as RenderBox;
+          size = renderBox.size;
+          position = renderBox.localToGlobal(Offset.zero);
+        }
+        widget.dragging.value = true;
+      }),
+      onDragEnd: (details) {
+        final mediaSize = MediaQueryData.fromView(View.of(context)).size;
+        widget.fractionX.value +=
+            (details.offset.dx - position.dx) / (mediaSize.width - size.width);
+        if (widget.fractionX.value < left) {
+          widget.fractionX.value = left;
+        }
+        if (widget.fractionX.value > right) {
+          widget.fractionX.value = right;
+        }
+        bind.sessionPeerOption(
+          sessionId: widget.sessionId,
+          name: 'remote-menubar-drag-x',
+          value: widget.fractionX.value.toString(),
+        );
+        widget.dragging.value = false;
+      },
     );
   }
 
@@ -3552,15 +2353,10 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
       );
     }
 
-    final axis = widget.isHorizontal ? Axis.horizontal : Axis.vertical;
-    final child = Flex(
-      direction: axis,
+    final child = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         _buildDraggable(context),
-        Obx(() => collapse.isTrue
-            ? _MinimizedMonitorSwitchButton(id: widget.id, ffi: widget.ffi)
-            : const Offstage()),
         Obx(() => buttonWrapper(
               () {
                 widget.setFullscreen(!isFullscreen.value);
@@ -3592,20 +2388,20 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
               )),
         buttonWrapper(
           () => setState(() {
-            widget.toolbarState.switchCollapse(widget.sessionId);
+            widget.toolbarState.switchShow(widget.sessionId);
           }),
           Obx((() => Tooltip(
-                message: translate(
-                    collapse.isFalse ? 'Hide Toolbar' : 'Show Toolbar'),
+                message:
+                    translate(show.isTrue ? 'Hide Toolbar' : 'Show Toolbar'),
                 child: Icon(
-                  _toolbarCollapseIcon(widget.edge.value, collapse.isTrue),
+                  show.isTrue ? Icons.expand_less : Icons.expand_more,
                   size: iconSize,
                 ),
               ))),
         ),
         if (isWebDesktop)
           Obx(() {
-            if (collapse.isFalse) {
+            if (show.isTrue) {
               return Offstage();
             } else {
               return buttonWrapper(
@@ -3640,8 +2436,7 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
           borderRadius: widget.borderRadius,
         ),
         child: SizedBox(
-          height: widget.isHorizontal ? 20 : null,
-          width: widget.isHorizontal ? null : 20,
+          height: 20,
           child: child,
         ),
       ),
@@ -3667,127 +2462,4 @@ Widget _buildPointerTrackWidget(Widget child, FFI? ffi) {
       child: child,
     ),
   );
-}
-
-class EdgeThicknessControl extends StatelessWidget {
-  final double value;
-  final ValueChanged<double>? onChanged;
-  final ColorScheme? colorScheme;
-
-  const EdgeThicknessControl({
-    Key? key,
-    required this.value,
-    this.onChanged,
-    this.colorScheme,
-  }) : super(key: key);
-
-  static const double kMin = 20;
-  static const double kMax = 150;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = this.colorScheme ?? Theme.of(context).colorScheme;
-
-    final slider = SliderTheme(
-      data: SliderTheme.of(context).copyWith(
-        activeTrackColor: colorScheme.primary,
-        thumbColor: colorScheme.primary,
-        overlayColor: colorScheme.primary.withOpacity(0.1),
-        showValueIndicator: ShowValueIndicator.never,
-        thumbShape: _RectValueThumbShape(
-          min: EdgeThicknessControl.kMin,
-          max: EdgeThicknessControl.kMax,
-          width: 52,
-          height: 24,
-          radius: 4,
-          unit: 'px',
-        ),
-      ),
-      child: Semantics(
-        value: value.toInt().toString(),
-        child: Slider(
-          value: value,
-          min: EdgeThicknessControl.kMin,
-          max: EdgeThicknessControl.kMax,
-          divisions:
-              (EdgeThicknessControl.kMax - EdgeThicknessControl.kMin).round(),
-          semanticFormatterCallback: (double newValue) =>
-              "${newValue.round()}px",
-          onChanged: onChanged,
-        ),
-      ),
-    );
-
-    return slider;
-  }
-}
-
-class _MinimizedMonitorSwitchButton extends StatelessWidget {
-  final String id;
-  final FFI ffi;
-
-  const _MinimizedMonitorSwitchButton({
-    Key? key,
-    required this.id,
-    required this.ffi,
-  }) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    const double iconSize = 20;
-    final cycle = _MonitorCycle(id, ffi);
-
-    return Obx(() {
-      final label = cycle.label;
-      if (!mainGetLocalBoolOptionSync(kOptionAllowMonitorSwitchMainToolbar) ||
-          !mainGetLocalBoolOptionSync(kOptionAllowMonitorSwitchMinToolbar)) {
-        return const Offstage();
-      }
-      if (cycle.total < 2) return const Offstage();
-      final privacyModeState = PrivacyModeState.find(id);
-      if (privacyModeState.isNotEmpty &&
-          !allowDisplaySwitchInPrivacyMode(
-              ffi.ffiModel.pi, privacyModeState.value)) {
-        return const Offstage();
-      }
-
-      return Tooltip(
-        message: cycle.tooltip,
-        child: TextButton(
-          onPressed: cycle.next,
-          style: ButtonStyle(
-            minimumSize: MaterialStateProperty.all(const Size(0, 0)),
-            padding: MaterialStateProperty.all(EdgeInsets.zero),
-            backgroundColor: MaterialStateProperty.resolveWith((states) {
-              if (states.contains(MaterialState.hovered)) {
-                return _ToolbarTheme.blueColor.withOpacity(0.15);
-              }
-              return null;
-            }),
-          ),
-          child: Stack(
-            alignment: const Alignment(0, -0.125),
-            children: [
-              SvgPicture.asset(
-                'assets/display_switcher.svg',
-                colorFilter:
-                    ColorFilter.mode(_ToolbarTheme.blueColor, BlendMode.srcIn),
-                width: iconSize,
-                height: iconSize,
-              ),
-              Text(
-                label,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 9,
-                  height: 1,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    });
-  }
 }

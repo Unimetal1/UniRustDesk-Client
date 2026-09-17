@@ -8,6 +8,7 @@ import 'package:flutter_hbb/mobile/pages/settings_page.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:get/get.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../common.dart';
@@ -35,7 +36,6 @@ class ServerModel with ChangeNotifier {
   int _connectStatus = 0; // Rendezvous Server status
   String _verificationMethod = "";
   String _temporaryPasswordLength = "";
-  bool _allowNumericOneTimePassword = false;
   String _approveMode = "";
   int _zeroClientLengthCounter = 0;
 
@@ -49,8 +49,6 @@ class ServerModel with ChangeNotifier {
   final List<Client> _clients = [];
 
   Timer? cmHiddenTimer;
-
-  final _wakelockKey = UniqueKey();
 
   bool get isStart => _isStart;
 
@@ -112,12 +110,6 @@ class ServerModel with ChangeNotifier {
           key: 'allow-hide-cm', value: bool2option('allow-hide-cm', false));
     }
     */
-  }
-
-  bool get allowNumericOneTimePassword => _allowNumericOneTimePassword;
-  switchAllowNumericOneTimePassword() async {
-    await mainSetBoolOption(
-        kOptionAllowNumericOneTimePassword, !_allowNumericOneTimePassword);
   }
 
   TextEditingController get serverId => _serverId;
@@ -235,8 +227,6 @@ class ServerModel with ChangeNotifier {
     final temporaryPasswordLength =
         await bind.mainGetOption(key: "temporary-password-length");
     final approveMode = await bind.mainGetOption(key: kOptionApproveMode);
-    final numericOneTimePassword =
-        await mainGetBoolOption(kOptionAllowNumericOneTimePassword);
     /*
     var hideCm = option2bool(
         'allow-hide-cm', await bind.mainGetOption(key: 'allow-hide-cm'));
@@ -275,10 +265,6 @@ class ServerModel with ChangeNotifier {
       _temporaryPasswordLength = temporaryPasswordLength;
       update = true;
     }
-    if (_allowNumericOneTimePassword != numericOneTimePassword) {
-      _allowNumericOneTimePassword = numericOneTimePassword;
-      update = true;
-    }
     /*
     if (_hideCm != hideCm) {
       _hideCm = hideCm;
@@ -298,7 +284,7 @@ class ServerModel with ChangeNotifier {
   }
 
   toggleAudio() async {
-    if (clients.any((c) => !c.disconnected)) {
+    if (clients.isNotEmpty) {
       await showClientsMayNotBeChangedAlert(parent.target);
     }
     if (!_audioOk && !await AndroidPermissionManager.check(kRecordAudio)) {
@@ -316,7 +302,7 @@ class ServerModel with ChangeNotifier {
   }
 
   toggleFile() async {
-    if (clients.any((c) => !c.disconnected)) {
+    if (clients.isNotEmpty) {
       await showClientsMayNotBeChangedAlert(parent.target);
     }
     if (!_fileOk &&
@@ -345,7 +331,7 @@ class ServerModel with ChangeNotifier {
   }
 
   toggleInput() async {
-    if (clients.any((c) => !c.disconnected)) {
+    if (clients.isNotEmpty) {
       await showClientsMayNotBeChangedAlert(parent.target);
     }
     if (_inputOk) {
@@ -467,8 +453,21 @@ class ServerModel with ChangeNotifier {
     await parent.target?.invokeMethod("stop_service");
     await bind.mainStopService();
     notifyListeners();
-    // for androidUpdatekeepScreenOn only
-    WakelockManager.disable(_wakelockKey);
+    if (!isLinux) {
+      // current linux is not supported
+      WakelockPlus.disable();
+    }
+  }
+
+  Future<bool> setPermanentPassword(String newPW) async {
+    await bind.mainSetPermanentPassword(password: newPW);
+    await Future.delayed(Duration(milliseconds: 500));
+    final pw = await bind.mainGetPermanentPassword();
+    if (newPW == pw) {
+      return true;
+    } else {
+      return false;
+    }
   }
 
   fetchID() async {
@@ -549,19 +548,10 @@ class ServerModel with ChangeNotifier {
         if (index < 0) {
           _clients.add(client);
         } else {
-          if (_clients[index].authorized) {
-            _clients[index].privacyMode = client.privacyMode;
-            notifyListeners();
-            return;
-          }
           _clients[index].authorized = true;
-          _clients[index].privacyMode = client.privacyMode;
         }
       } else {
-        final index = _clients.indexWhere((c) => c.id == client.id);
-        if (index >= 0) {
-          _clients[index].privacyMode = client.privacyMode;
-          notifyListeners();
+        if (_clients.any((c) => c.id == client.id)) {
           return;
         }
         _clients.add(client);
@@ -610,13 +600,7 @@ class ServerModel with ChangeNotifier {
   void showLoginDialog(Client client) {
     showClientDialog(
       client,
-      client.isFileTransfer
-          ? "Transfer file"
-          : client.isViewCamera
-              ? "View camera"
-              : client.isTerminal
-                  ? "Terminal"
-                  : "Share screen",
+      client.isFileTransfer ? "File Connection" : "Screen Connection",
       'Do you accept?',
       'android_new_connection_tip',
       () => sendLoginResponse(client, false),
@@ -695,7 +679,7 @@ class ServerModel with ChangeNotifier {
   void sendLoginResponse(Client client, bool res) async {
     if (res) {
       bind.cmLoginRes(connId: client.id, res: res);
-      if (!client.isFileTransfer && !client.isTerminal) {
+      if (!client.isFileTransfer) {
         parent.target?.invokeMethod("start_capture");
       }
       parent.target?.invokeMethod("cancel_notification", client.id);
@@ -794,10 +778,12 @@ class ServerModel with ChangeNotifier {
     final on = ((keepScreenOn == KeepScreenOn.serviceOn) && _isStart) ||
         (keepScreenOn == KeepScreenOn.duringControlled &&
             _clients.map((e) => !e.disconnected).isNotEmpty);
-    if (on) {
-      WakelockManager.enable(_wakelockKey, isServer: true);
-    } else {
-      WakelockManager.disable(_wakelockKey);
+    if (on != await WakelockPlus.enabled) {
+      if (on) {
+        WakelockPlus.enable();
+      } else {
+        WakelockPlus.disable();
+      }
     }
   }
 }
@@ -805,20 +791,15 @@ class ServerModel with ChangeNotifier {
 enum ClientType {
   remote,
   file,
-  camera,
   portForward,
-  terminal,
 }
 
 class Client {
   int id = 0; // client connections inner count id
   bool authorized = false;
   bool isFileTransfer = false;
-  bool isViewCamera = false;
-  bool isTerminal = false;
   String portForward = "";
   String name = "";
-  String avatar = "";
   String peerId = ""; // peer user's id,show at app
   bool keyboard = false;
   bool clipboard = false;
@@ -827,7 +808,6 @@ class Client {
   bool restart = false;
   bool recording = false;
   bool blockInput = false;
-  bool privacyMode = false;
   bool disconnected = false;
   bool fromSwitch = false;
   bool inVoiceCall = false;
@@ -835,19 +815,15 @@ class Client {
 
   RxInt unreadChatMessageCount = 0.obs;
 
-  Client(this.id, this.authorized, this.isFileTransfer, this.isViewCamera,
-      this.name, this.peerId, this.keyboard, this.clipboard, this.audio);
+  Client(this.id, this.authorized, this.isFileTransfer, this.name, this.peerId,
+      this.keyboard, this.clipboard, this.audio);
 
   Client.fromJson(Map<String, dynamic> json) {
     id = json['id'];
     authorized = json['authorized'];
     isFileTransfer = json['is_file_transfer'];
-    // TODO: no entry then default.
-    isViewCamera = json['is_view_camera'];
-    isTerminal = json['is_terminal'] ?? false;
     portForward = json['port_forward'];
     name = json['name'];
-    avatar = json['avatar'] ?? '';
     peerId = json['peer_id'];
     keyboard = json['keyboard'];
     clipboard = json['clipboard'];
@@ -856,7 +832,6 @@ class Client {
     restart = json['restart'];
     recording = json['recording'];
     blockInput = json['block_input'];
-    privacyMode = json['privacy_mode'] ?? privacyMode;
     disconnected = json['disconnected'];
     fromSwitch = json['from_switch'];
     inVoiceCall = json['in_voice_call'];
@@ -868,11 +843,8 @@ class Client {
     data['id'] = id;
     data['authorized'] = authorized;
     data['is_file_transfer'] = isFileTransfer;
-    data['is_view_camera'] = isViewCamera;
-    data['is_terminal'] = isTerminal;
     data['port_forward'] = portForward;
     data['name'] = name;
-    data['avatar'] = avatar;
     data['peer_id'] = peerId;
     data['keyboard'] = keyboard;
     data['clipboard'] = clipboard;
@@ -881,7 +853,6 @@ class Client {
     data['restart'] = restart;
     data['recording'] = recording;
     data['block_input'] = blockInput;
-    data['privacy_mode'] = privacyMode;
     data['disconnected'] = disconnected;
     data['from_switch'] = fromSwitch;
     data['in_voice_call'] = inVoiceCall;
@@ -892,10 +863,6 @@ class Client {
   ClientType type_() {
     if (isFileTransfer) {
       return ClientType.file;
-    } else if (isViewCamera) {
-      return ClientType.camera;
-    } else if (isTerminal) {
-      return ClientType.terminal;
     } else if (portForward.isNotEmpty) {
       return ClientType.portForward;
     } else {

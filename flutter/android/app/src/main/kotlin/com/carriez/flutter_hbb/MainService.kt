@@ -65,8 +65,8 @@ class MainService : Service() {
     @Keep
     @RequiresApi(Build.VERSION_CODES.N)
     fun rustPointerInput(kind: Int, mask: Int, x: Int, y: Int) {
-        // turn on screen with LEFT_DOWN when screen off
-        if (!powerManager.isInteractive && (kind == 0 || mask == LEFT_DOWN)) {
+        // turn on screen with LIFT_DOWN when screen off
+        if (!powerManager.isInteractive && (kind == 0 || mask == LIFT_DOWN)) {
             if (wakeLock.isHeld) {
                 Log.d(logTag, "Turn on Screen, WakeLock release")
                 wakeLock.release()
@@ -122,9 +122,9 @@ class MainService : Service() {
                     val authorized = jsonObject["authorized"] as Boolean
                     val isFileTransfer = jsonObject["is_file_transfer"] as Boolean
                     val type = if (isFileTransfer) {
-                        translate("Transfer file")
+                        translate("File Connection")
                     } else {
-                        translate("Share screen")
+                        translate("Screen Connection")
                     }
                     if (authorized) {
                         if (!isFileTransfer && !isStart) {
@@ -252,16 +252,6 @@ class MainService : Service() {
         checkMediaPermission()
         stopService(Intent(this, FloatingWindowService::class.java))
         super.onDestroy()
-    }
-
-    // Swiping the app away from recents destroys the UI but this service keeps
-    // the process alive, so outgoing sessions would stay connected with no way
-    // to close them. Incoming connections are unaffected: the service keeps
-    // running so the device stays reachable.
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        Log.d(logTag, "onTaskRemoved, closing outgoing sessions")
-        FFI.closeAllSessions()
-        super.onTaskRemoved(rootIntent)
     }
 
     private var isHalfScale: Boolean? = null;

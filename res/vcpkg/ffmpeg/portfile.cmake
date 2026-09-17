@@ -25,9 +25,6 @@ vcpkg_from_github(
     patch/0007-fix-linux-configure.patch
     patch/0008-remove-amf-loop-query.patch
     patch/0009-fix-nvenc-reconfigure-blur.patch
-    patch/0010.disable-loading-DLLs-from-app-dir.patch
-    patch/0011-android-mediacodec-encode-align-64.patch
-    patch/0012-fix-macos-big-sur-CVBufferCopyAttachments.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
@@ -130,18 +127,14 @@ elseif(VCPKG_TARGET_IS_WINDOWS)
 --cc=cl \
 --enable-gpl \
 --enable-d3d11va \
---enable-hwaccel=h264_d3d11va \
---enable-hwaccel=hevc_d3d11va \
---enable-hwaccel=h264_d3d11va2 \
---enable-hwaccel=hevc_d3d11va2 \
-")
-
-    if(VCPKG_TARGET_ARCHITECTURE STREQUAL "x86" OR VCPKG_TARGET_ARCHITECTURE STREQUAL "x64")
-        string(APPEND OPTIONS "\
 --enable-cuda \
 --enable-ffnvcodec \
 --enable-hwaccel=h264_nvdec \
 --enable-hwaccel=hevc_nvdec \
+--enable-hwaccel=h264_d3d11va \
+--enable-hwaccel=hevc_d3d11va \
+--enable-hwaccel=h264_d3d11va2 \
+--enable-hwaccel=hevc_d3d11va2 \
 --enable-amf \
 --enable-encoder=h264_amf \
 --enable-encoder=hevc_amf \
@@ -151,7 +144,6 @@ elseif(VCPKG_TARGET_IS_WINDOWS)
 --enable-encoder=h264_qsv \
 --enable-encoder=hevc_qsv \
 ")
-    endif()
 
     if(VCPKG_TARGET_ARCHITECTURE STREQUAL "x86")
         set(LIB_MACHINE_ARG /machine:x86)
@@ -159,9 +151,6 @@ elseif(VCPKG_TARGET_IS_WINDOWS)
     elseif(VCPKG_TARGET_ARCHITECTURE STREQUAL "x64")
         set(LIB_MACHINE_ARG /machine:x64)
         string(APPEND OPTIONS " --arch=x86_64")
-    elseif(VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
-        set(LIB_MACHINE_ARG /machine:arm64)
-        string(APPEND OPTIONS " --arch=aarch64 --enable-cross-compile")
     else()
         message(FATAL_ERROR "Unsupported target architecture")
     endif()
@@ -186,7 +175,6 @@ elseif(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android")
     string(APPEND OPTIONS "\
 --target-os=android \
 --disable-asm \
---disable-iconv \
 --enable-jni \
 --enable-mediacodec \
 --disable-hwaccels \

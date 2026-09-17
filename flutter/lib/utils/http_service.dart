@@ -1,9 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_hbb/consts.dart';
 import 'package:http/http.dart' as http;
 import '../models/platform_model.dart';
-import 'package:flutter_hbb/common.dart';
 export 'package:http/http.dart' show Response;
 
 enum HttpMethod { get, post, put, delete }
@@ -17,19 +15,11 @@ class HttpService {
   }) async {
     headers ??= {'Content-Type': 'application/json'};
 
-    // Use Rust HTTP implementation for non-web platforms for consistency.
-    var useFlutterHttp = (isWeb || kIsWeb);
-    if (!useFlutterHttp) {
-      final enableFlutterHttpOnRust =
-          mainGetLocalBoolOptionSync(kOptionEnableFlutterHttpOnRust);
-      // Use flutter http if:
-      // Not `enableFlutterHttpOnRust` and no proxy is set
-      useFlutterHttp =
-          !(enableFlutterHttpOnRust || await bind.mainGetProxyStatus());
-    }
+    // Determine if there is currently a proxy setting, and if so, use FFI to call the Rust HTTP method.
+    final isProxy = await bind.mainGetProxyStatus();
 
-    if (useFlutterHttp) {
-      return await _pollFlutterHttp(url, method, headers: headers, body: body);
+    if (!isProxy) {
+      return await _pollFultterHttp(url, method, headers: headers, body: body);
     }
 
     String headersJson = jsonEncode(headers);
@@ -44,51 +34,32 @@ class HttpService {
     return _parseHttpResponse(resJson);
   }
 
-  // Bounds only the pure-Dart branch below, which the OS would otherwise
-  // let hang forever (e.g. a black-holed TLS handshake), see #15700.
-  // The Rust branch has its own 12s-per-attempt timeouts and must be
-  // awaited to completion: a Dart-side timeout there would race the
-  // URL-keyed ASYNC_HTTP_STATUS entry of the abandoned request.
-  static const _requestTimeout = Duration(seconds: 30);
-
-  Future<http.Response> _pollFlutterHttp(
+  Future<http.Response> _pollFultterHttp(
     Uri url,
     HttpMethod method, {
     Map<String, String>? headers,
     dynamic body,
   }) async {
-    final client = http.Client();
-    try {
-      var response = http.Response('', 400);
+    var response = http.Response('', 400);
 
-      switch (method) {
-        case HttpMethod.get:
-          response =
-              await client.get(url, headers: headers).timeout(_requestTimeout);
-          break;
-        case HttpMethod.post:
-          response = await client
-              .post(url, headers: headers, body: body)
-              .timeout(_requestTimeout);
-          break;
-        case HttpMethod.put:
-          response = await client
-              .put(url, headers: headers, body: body)
-              .timeout(_requestTimeout);
-          break;
-        case HttpMethod.delete:
-          response = await client
-              .delete(url, headers: headers, body: body)
-              .timeout(_requestTimeout);
-          break;
-        default:
-          throw Exception('Unsupported HTTP method');
-      }
-
-      return response;
-    } finally {
-      client.close();
+    switch (method) {
+      case HttpMethod.get:
+        response = await http.get(url, headers: headers);
+        break;
+      case HttpMethod.post:
+        response = await http.post(url, headers: headers, body: body);
+        break;
+      case HttpMethod.put:
+        response = await http.put(url, headers: headers, body: body);
+        break;
+      case HttpMethod.delete:
+        response = await http.delete(url, headers: headers, body: body);
+        break;
+      default:
+        throw Exception('Unsupported HTTP method');
     }
+
+    return response;
   }
 
   Future<String> _pollForResponse(String url) async {
@@ -116,8 +87,7 @@ class HttpService {
       int statusCode = parsedJson['status_code'];
       return http.Response(body, statusCode, headers: headers);
     } catch (e) {
-      print('Failed to parse response\n$responseJson\nError:\n$e');
-      throw Exception('Failed to parse response.\n$responseJson');
+      throw Exception('Failed to parse response: $e');
     }
   }
 }

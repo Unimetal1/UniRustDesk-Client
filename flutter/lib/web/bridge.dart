@@ -60,8 +60,7 @@ class RustdeskImpl {
     throw UnimplementedError("hostStopSystemKeyPropagate");
   }
 
-  int peerGetSessionsCount(
-      {required String id, required int connType, dynamic hint}) {
+  int peerGetDefaultSessionsCount({required String id, dynamic hint}) {
     return 0;
   }
 
@@ -69,7 +68,6 @@ class RustdeskImpl {
       {required String id,
       required UuidValue sessionId,
       required Int32List displays,
-      required bool isViewCamera,
       dynamic hint}) {
     return '';
   }
@@ -78,10 +76,8 @@ class RustdeskImpl {
       {required UuidValue sessionId,
       required String id,
       required bool isFileTransfer,
-      required bool isViewCamera,
       required bool isPortForward,
       required bool isRdp,
-      required bool isTerminal,
       required String switchUuid,
       required bool forceRelay,
       required String password,
@@ -94,9 +90,7 @@ class RustdeskImpl {
         'id': id,
         'password': password,
         'is_shared_password': isSharedPassword,
-        'isFileTransfer': isFileTransfer,
-        'isViewCamera': isViewCamera,
-        'isTerminal': isTerminal
+        'isFileTransfer': isFileTransfer
       })
     ]);
   }
@@ -267,16 +261,6 @@ class RustdeskImpl {
           'option:session',
           jsonEncode({'name': 'view_style', 'value': value})
         ]));
-  }
-
-  Future<int?> sessionGetTrackpadSpeed(
-      {required UuidValue sessionId, dynamic hint}) {
-    throw UnimplementedError("sessionGetTrackpadSpeed");
-  }
-
-  Future<void> sessionSetTrackpadSpeed(
-      {required UuidValue sessionId, required int value, dynamic hint}) {
-    throw UnimplementedError("sessionSetTrackpadSpeed");
   }
 
   Future<String?> sessionGetScrollStyle(
@@ -762,6 +746,10 @@ class RustdeskImpl {
     throw UnimplementedError("mainGetError");
   }
 
+  bool mainShowOption({required String key, dynamic hint}) {
+    throw UnimplementedError("mainShowOption");
+  }
+
   Future<void> mainSetOption(
       {required String key, required String value, dynamic hint}) {
     js.context.callMethod('setByName', [
@@ -808,7 +796,7 @@ class RustdeskImpl {
   }
 
   String mainGetAppNameSync({dynamic hint}) {
-    return js.context.callMethod('getByName', ['app-name']);
+    return 'RustDesk';
   }
 
   String mainUriPrefixSync({dynamic hint}) {
@@ -904,18 +892,8 @@ class RustdeskImpl {
     return js.context.callMethod('getByName', ['option:local', key]);
   }
 
-  // Do not return the real environment variables.
-  // Use the global variable as the environment variable in web.
   String mainGetEnv({required String key, dynamic hint}) {
-    return js.context.callMethod('getByName', ['envvar', key]);
-  }
-
-  // Use the global variable as the environment variable in web.
-  void mainSetEnv({required String key, String? value, dynamic hint}) {
-    js.context.callMethod('setByName', [
-      'envvar',
-      jsonEncode({'name': key, 'value': value})
-    ]);
+    throw UnimplementedError("mainGetEnv");
   }
 
   Future<void> mainSetLocalOption(
@@ -1155,6 +1133,10 @@ class RustdeskImpl {
     return Future.value('');
   }
 
+  Future<String> mainGetPermanentPassword({dynamic hint}) {
+    return Future.value('');
+  }
+
   Future<String> mainGetFingerprint({dynamic hint}) {
     return Future.value('');
   }
@@ -1338,9 +1320,9 @@ class RustdeskImpl {
     throw UnimplementedError("mainUpdateTemporaryPassword");
   }
 
-  Future<bool> mainSetPermanentPasswordWithResult(
+  Future<void> mainSetPermanentPassword(
       {required String password, dynamic hint}) {
-    throw UnimplementedError("mainSetPermanentPasswordWithResult");
+    throw UnimplementedError("mainSetPermanentPassword");
   }
 
   Future<bool> mainCheckSuperUserPermission({dynamic hint}) {
@@ -1534,23 +1516,15 @@ class RustdeskImpl {
 
   Future<void> mainAccountAuth(
       {required String op, required bool rememberMe, dynamic hint}) {
-    // Safari only allows auth popups while handling the original user gesture.
-    // Use Future.sync so the JS call runs synchronously (pre-opening the OIDC
-    // window) while any interop error still surfaces as a Future error.
-    return Future.sync(() => js.context.callMethod('setByName', [
-          'account_auth',
-          jsonEncode({'op': op, 'remember': rememberMe})
-        ]));
+    throw UnimplementedError("mainAccountAuth");
   }
 
   Future<void> mainAccountAuthCancel({dynamic hint}) {
-    return Future(
-        () => js.context.callMethod('setByName', ['account_auth_cancel']));
+    throw UnimplementedError("mainAccountAuthCancel");
   }
 
   Future<String> mainAccountAuthResult({dynamic hint}) {
-    return Future(
-        () => js.context.callMethod('getByName', ['account_auth_result']));
+    throw UnimplementedError("mainAccountAuthResult");
   }
 
   Future<void> mainOnMainWindowClose({dynamic hint}) {
@@ -1604,28 +1578,23 @@ class RustdeskImpl {
   }
 
   bool isCustomClient({dynamic hint}) {
-    // is_custom_client() checks if app name is not "RustDesk"
-    return mainGetAppNameSync(hint: hint) != "RustDesk";
+    return false;
   }
 
   bool isDisableSettings({dynamic hint}) {
-    // Checks HARD_SETTINGS["disable-settings"] == "Y"
-    return mainGetHardOption(key: "disable-settings", hint: hint) == "Y";
+    return false;
   }
 
   bool isDisableAb({dynamic hint}) {
-    // Checks HARD_SETTINGS["disable-ab"] == "Y"
-    return mainGetHardOption(key: "disable-ab", hint: hint) == "Y";
+    return false;
   }
 
   bool isDisableGroupPanel({dynamic hint}) {
-    // Checks LocalConfig::get_option("disable-group-panel") == "Y"
-    return mainGetLocalOption(key: "disable-group-panel", hint: hint) == "Y";
+    return false;
   }
 
   bool isDisableAccount({dynamic hint}) {
-    // Checks HARD_SETTINGS["disable-account"] == "Y"
-    return mainGetHardOption(key: "disable-account", hint: hint) == "Y";
+    return false;
   }
 
   bool isDisableInstallation({dynamic hint}) {
@@ -1638,6 +1607,78 @@ class RustdeskImpl {
 
   Future<void> sendUrlScheme({required String url, dynamic hint}) {
     throw UnimplementedError("sendUrlScheme");
+  }
+
+  Future<void> pluginEvent(
+      {required String id,
+      required String peer,
+      required Uint8List event,
+      dynamic hint}) {
+    throw UnimplementedError("pluginEvent");
+  }
+
+  Stream<EventToUI> pluginRegisterEventStream(
+      {required String id, dynamic hint}) {
+    throw UnimplementedError("pluginRegisterEventStream");
+  }
+
+  String? pluginGetSessionOption(
+      {required String id,
+      required String peer,
+      required String key,
+      dynamic hint}) {
+    throw UnimplementedError("pluginGetSessionOption");
+  }
+
+  Future<void> pluginSetSessionOption(
+      {required String id,
+      required String peer,
+      required String key,
+      required String value,
+      dynamic hint}) {
+    throw UnimplementedError("pluginSetSessionOption");
+  }
+
+  String? pluginGetSharedOption(
+      {required String id, required String key, dynamic hint}) {
+    throw UnimplementedError("pluginGetSharedOption");
+  }
+
+  Future<void> pluginSetSharedOption(
+      {required String id,
+      required String key,
+      required String value,
+      dynamic hint}) {
+    throw UnimplementedError("pluginSetSharedOption");
+  }
+
+  Future<void> pluginReload({required String id, dynamic hint}) {
+    throw UnimplementedError("pluginReload");
+  }
+
+  void pluginEnable({required String id, required bool v, dynamic hint}) {
+    throw UnimplementedError("pluginEnable");
+  }
+
+  bool pluginIsEnabled({required String id, dynamic hint}) {
+    throw UnimplementedError("pluginIsEnabled");
+  }
+
+  bool pluginFeatureIsEnabled({dynamic hint}) {
+    throw UnimplementedError("pluginFeatureIsEnabled");
+  }
+
+  Future<void> pluginSyncUi({required String syncTo, dynamic hint}) {
+    throw UnimplementedError("pluginSyncUi");
+  }
+
+  Future<void> pluginListReload({dynamic hint}) {
+    throw UnimplementedError("pluginListReload");
+  }
+
+  Future<void> pluginInstall(
+      {required String id, required bool b, dynamic hint}) {
+    throw UnimplementedError("pluginInstall");
   }
 
   bool isSupportMultiUiSession({required String version, dynamic hint}) {
@@ -1653,7 +1694,7 @@ class RustdeskImpl {
   }
 
   String mainSupportedPrivacyModeImpls({dynamic hint}) {
-    return '[]';
+    throw UnimplementedError("mainSupportedPrivacyModeImpls");
   }
 
   String mainSupportedInputSource({dynamic hint}) {
@@ -1676,7 +1717,7 @@ class RustdeskImpl {
   }
 
   String mainGetHardOption({required String key, dynamic hint}) {
-    return mainGetLocalOption(key: key, hint: hint);
+    throw UnimplementedError("mainGetHardOption");
   }
 
   Future<void> mainCheckHwcodec({dynamic hint}) {
@@ -1749,7 +1790,7 @@ class RustdeskImpl {
   }
 
   String mainGetBuildinOption({required String key, dynamic hint}) {
-    return mainGetLocalOption(key: key, hint: hint);
+    return '';
   }
 
   String installInstallOptions({dynamic hint}) {
@@ -1805,176 +1846,6 @@ class RustdeskImpl {
 
   String? sessionGetConnToken({required UuidValue sessionId, dynamic hint}) {
     throw UnimplementedError("sessionGetConnToken");
-  }
-
-  String mainGetPrinterNames({dynamic hint}) {
-    return '';
-  }
-
-  Future<void> sessionPrinterResponse(
-      {required UuidValue sessionId,
-      required int id,
-      required String path,
-      required String printerName,
-      dynamic hint}) {
-    throw UnimplementedError("sessionPrinterResponse");
-  }
-
-  Future<String> mainGetCommon({required String key, dynamic hint}) {
-    throw UnimplementedError("mainGetCommon");
-  }
-
-  String mainGetCommonSync({required String key, dynamic hint}) {
-    throw UnimplementedError("mainGetCommonSync");
-  }
-
-  Future<void> mainSetCommon(
-      {required String key, required String value, dynamic hint}) {
-    throw UnimplementedError("mainSetCommon");
-  }
-
-  Future<String> sessionHandleScreenshot(
-      {required UuidValue sessionId, required String action, dynamic hint}) {
-    throw UnimplementedError("sessionHandleScreenshot");
-  }
-
-  Future<void> sessionSetCommon(
-      {required UuidValue sessionId, required String key, required String value, dynamic hint}) {
-      js.context.callMethod('setByName', [
-        'common',
-        jsonEncode({'name': key, 'value': value})
-      ]);
-      return Future.value();
-  }
-
-  String? sessionGetCommonSync(
-      {required UuidValue sessionId,
-      required String key,
-      required String param,
-      dynamic hint}) {
-    throw UnimplementedError("sessionGetCommonSync");
-  }
-
-  Future<void> sessionTakeScreenshot(
-      {required UuidValue sessionId, required int display, dynamic hint}) {
-    throw UnimplementedError("sessionTakeScreenshot");
-  }
-
-  Future<void> sessionOpenTerminal(
-      {required UuidValue sessionId,
-      required int terminalId,
-      required int rows,
-      required int cols,
-      dynamic hint}) {
-    return Future(() => js.context.callMethod('setByName', [
-          'open_terminal',
-          jsonEncode({
-            'terminal_id': terminalId,
-            'rows': rows,
-            'cols': cols,
-          })
-        ]));
-  }
-
-  Future<void> sessionSendTerminalInput(
-      {required UuidValue sessionId,
-      required int terminalId,
-      required String data,
-      dynamic hint}) {
-    return Future(() => js.context.callMethod('setByName', [
-          'send_terminal_input',
-          jsonEncode({
-            'terminal_id': terminalId,
-            'data': data,
-          })
-        ]));
-  }
-
-  Future<void> sessionResizeTerminal(
-      {required UuidValue sessionId,
-      required int terminalId,
-      required int rows,
-      required int cols,
-      dynamic hint}) {
-    return Future(() => js.context.callMethod('setByName', [
-          'resize_terminal',
-          jsonEncode({
-            'terminal_id': terminalId,
-            'rows': rows,
-            'cols': cols,
-          })
-        ]));
-  }
-
-  Future<void> sessionCloseTerminal(
-      {required UuidValue sessionId, required int terminalId, dynamic hint}) {
-    return Future(() => js.context.callMethod('setByName', [
-          'close_terminal',
-          jsonEncode({
-            'terminal_id': terminalId,
-          })
-        ]));
-  }
-
-  Future<int?> sessionGetEdgeScrollEdgeThickness(
-      {required UuidValue sessionId, dynamic hint}) {
-    final thickness = js.context.callMethod(
-        'getByName', ['option:session', 'edge-scroll-edge-thickness']);
-    return Future(() => int.tryParse(thickness) ?? 100);
-  }
-
-  Future<void> sessionSetEdgeScrollEdgeThickness(
-      {required UuidValue sessionId, required int value, dynamic hint}) {
-    return Future(() => js.context.callMethod('setByName',
-        ['option:session', 'edge-scroll-edge-thickness', value.toString()]));
-  }
-
-  String sessionGetConnSessionId({required UuidValue sessionId, dynamic hint}) {
-    return js.context.callMethod('getByName', ['conn_session_id']);
-  }
-
-  bool willSessionCloseCloseSession(
-      {required UuidValue sessionId, dynamic hint}) {
-    return true;
-  }
-
-  String sessionGetLastAuditNote({required UuidValue sessionId, dynamic hint}) {
-    return js.context.callMethod('getByName', ['last_audit_note']);
-  }
-
-  Future<void> sessionSetAuditGuid(
-      {required UuidValue sessionId, required String guid, dynamic hint}) {
-    return Future(
-        () => js.context.callMethod('setByName', ['audit_guid', guid]));
-  }
-
-  String sessionGetAuditGuid({required UuidValue sessionId, dynamic hint}) {
-    return js.context.callMethod('getByName', ['audit_guid']);
-  }
-
-  bool mainSetCursorPosition({required int x, required int y, dynamic hint}) {
-    return false;
-  }
-
-  bool mainClipCursor(
-      {required int left,
-      required int top,
-      required int right,
-      required int bottom,
-      required bool enable,
-      dynamic hint}) {
-    return false;
-  }
-
-  String mainResolveAvatarUrl({required String avatar, dynamic hint}) {
-    return js.context.callMethod(
-            'getByName', ['resolve_avatar_url', avatar])?.toString() ??
-        avatar;
-  }
-
-  Future<String> mainDeployDevice(
-      {required String token, required String id, dynamic hint}) {
-    throw UnimplementedError("mainDeployDevice");
   }
 
   void dispose() {}

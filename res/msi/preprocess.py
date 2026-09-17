@@ -8,11 +8,8 @@ import argparse
 import datetime
 import subprocess
 import re
-import platform
 from pathlib import Path
-from itertools import chain
 import shutil
-from xml.sax.saxutils import quoteattr
 
 g_indent_unit = "\t"
 g_version = ""
@@ -50,19 +47,19 @@ def make_parser():
         "--dist-dir",
         type=str,
         default="../../rustdesk",
-        help="The dist directory to install.",
+        help="The dist direcotry to install.",
     )
     parser.add_argument(
         "--arp",
         action="store_true",
-        help="Deprecated; native MSI ARP registration is always used.",
+        help="Is ARPSYSTEMCOMPONENT",
         default=False,
     )
     parser.add_argument(
         "--custom-arp",
         type=str,
         default="{}",
-        help='Custom arp properties, e.g. \'{"Comments": {"msi": "ARPCOMMENTS", "v": "Remote control application."}}\'',
+        help='Custom arp properties, e.g. \'["Comments": {"msi": "ARPCOMMENTS", "v": "Remote control application."}]\'',
     )
     parser.add_argument(
         "-c", "--custom", action="store_true", help="Is custom client", default=False
@@ -86,7 +83,7 @@ def make_parser():
         "-m",
         "--manufacturer",
         type=str,
-        default="Purslane Tech Pte. Ltd.",
+        default="PURSLANE",
         help="The app manufacturer.",
     )
     return parser
@@ -190,17 +187,6 @@ def replace_app_name_in_langs(app_name):
         with open(file_path, "w", encoding="utf-8") as f:
             f.writelines(lines)
 
-def replace_app_name_in_custom_actions(app_name):
-    custion_actions_dir = Path(sys.argv[0]).parent.joinpath("CustomActions")
-    for file_path in chain(custion_actions_dir.glob("*.cpp"), custion_actions_dir.glob("*.h")):
-        with open(file_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        for i, line in enumerate(lines):
-            line = re.sub(r"\bRustDesk\b", app_name, line)
-            line = line.replace(f"{app_name} v4 Printer Driver", "RustDesk v4 Printer Driver")
-            lines[i] = line
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
 
 def gen_upgrade_info():
     def func(lines, index_start):
@@ -259,19 +245,25 @@ def gen_custom_dialog_bitmaps():
     )
 
 
-def gen_native_arp_properties():
+def gen_custom_ARPSYSTEMCOMPONENT_False(args):
     def func(lines, index_start):
         indent = g_indent_unit * 2
 
         lines_new = []
+        lines_new.append(
+            f"{indent}<!--https://learn.microsoft.com/en-us/windows/win32/msi/arpsystemcomponent?redirectedfrom=MSDN-->\n"
+        )
+        lines_new.append(
+            f'{indent}<!--<Property Id="ARPSYSTEMCOMPONENT" Value="1" />-->\n\n'
+        )
+
         lines_new.append(
             f"{indent}<!--https://learn.microsoft.com/en-us/windows/win32/msi/property-reference-->\n"
         )
         for _, v in g_arpsystemcomponent.items():
             if "msi" in v and "v" in v:
                 lines_new.append(
-                    f'{indent}<Property Id={quoteattr(str(v["msi"]))} '
-                    f'Value={quoteattr(str(v["v"]))} />\n'
+                    f'{indent}<Property Id="{v["msi"]}" Value="{v["v"]}" />\n'
                 )
 
         for i, line in enumerate(lines_new):
@@ -286,16 +278,92 @@ def gen_native_arp_properties():
     )
 
 
-def gen_install_state_values():
+def get_folder_size(folder_path):
+    total_size = 0
+
+    folder = Path(folder_path)
+    for file in folder.glob("**/*"):
+        if file.is_file():
+            total_size += file.stat().st_size
+
+    return total_size
+
+
+def gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir):
     def func(lines, index_start):
         indent = g_indent_unit * 5
+
         lines_new = []
-        for name, value in g_arpsystemcomponent.items():
-            if "msi" not in value and "v" in value:
-                value_type = value.get("t", "string")
+        lines_new.append(
+            f"{indent}<!--https://learn.microsoft.com/en-us/windows/win32/msi/property-reference-->\n"
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="string" Name="DisplayName" Value="{args.app_name}" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="string" Name="DisplayIcon" Value="[INSTALLFOLDER_INNER]{args.app_name}.exe" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="string" Name="DisplayVersion" Value="{g_version}" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="string" Name="Publisher" Value="{args.manufacturer}" />\n'
+        )
+        installDate = datetime.datetime.now().strftime("%Y%m%d")
+        lines_new.append(
+            f'{indent}<RegistryValue Type="string" Name="InstallDate" Value="{installDate}" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="string" Name="InstallLocation" Value="[INSTALLFOLDER_INNER]" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="string" Name="InstallSource" Value="[InstallSource]" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="integer" Name="Language" Value="[ProductLanguage]" />\n'
+        )
+
+        estimated_size = get_folder_size(dist_dir)
+        lines_new.append(
+            f'{indent}<RegistryValue Type="integer" Name="EstimatedSize" Value="{estimated_size}" />\n'
+        )
+
+        lines_new.append(
+            f'{indent}<RegistryValue Type="expandable" Name="ModifyPath" Value="MsiExec.exe /X [ProductCode]" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="integer" Id="NoModify" Value="1" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="expandable" Name="UninstallString" Value="MsiExec.exe /X [ProductCode]" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="expandable" Name="QuietUninstallString" Value="MsiExec.exe /qn /X [ProductCode]" />\n'
+        )
+
+        vs = g_version.split(".")
+        major, minor, build = vs[0], vs[1], vs[2]
+        lines_new.append(
+            f'{indent}<RegistryValue Type="string" Name="Version" Value="{g_version}" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="integer" Name="VersionMajor" Value="{major}" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="integer" Name="VersionMinor" Value="{minor}" />\n'
+        )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="integer" Name="VersionBuild" Value="{build}" />\n'
+        )
+
+        lines_new.append(
+            f'{indent}<RegistryValue Type="integer" Name="WindowsInstaller" Value="1" />\n'
+        )
+        for k, v in g_arpsystemcomponent.items():
+            if "v" in v:
+                t = v["t"] if "t" in v is None else "string"
                 lines_new.append(
-                    f'{indent}<RegistryValue Type={quoteattr(str(value_type))} '
-                    f'Name={quoteattr(str(name))} Value={quoteattr(str(value["v"]))} />\n'
+                    f'{indent}<RegistryValue Type="{t}" Name="{k}" Value="{v["v"]}" />\n'
                 )
 
         for i, line in enumerate(lines_new):
@@ -304,35 +372,24 @@ def gen_install_state_values():
 
     return gen_content_between_tags(
         "Package/Components/Regs.wxs",
-        "<!--$InstallStateStart$-->",
-        "<!--$InstallStateEnd$-->",
+        "<!--$ArpStart$-->",
+        "<!--$ArpEnd$-->",
         func,
     )
 
 
-def gen_custom_ARPSYSTEMCOMPONENT(args, _dist_dir):
+def gen_custom_ARPSYSTEMCOMPONENT(args, dist_dir):
     try:
-        custom_arp = dict(json.loads(args.custom_arp))
-    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        custom_arp = json.loads(args.custom_arp)
+        g_arpsystemcomponent.update(custom_arp)
+    except json.JSONDecodeError as e:
         print(f"Failed to decode custom arp: {e}")
         return False
 
-    if any(not isinstance(value, dict) for value in custom_arp.values()):
-        print("Custom arp entries must be objects.")
-        return False
-
-    if any(
-        isinstance(value, dict) and value.get("msi") == "ARPSYSTEMCOMPONENT"
-        for value in custom_arp.values()
-    ):
-        print("ARPSYSTEMCOMPONENT is not allowed; native MSI ARP registration must remain visible.")
-        return False
-
-    g_arpsystemcomponent.update(custom_arp)
-
-    if not gen_native_arp_properties():
-        return False
-    return gen_install_state_values()
+    if args.arp:
+        return gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir)
+    else:
+        return gen_custom_ARPSYSTEMCOMPONENT_False(args)
 
 def gen_conn_type(args):
     def func(lines, index_start):
@@ -427,7 +484,7 @@ def update_license_file(app_name):
         license_content = f.read()
     license_content = license_content.replace("website rustdesk.com and other ", "")
     license_content = license_content.replace("RustDesk", app_name)
-    license_content = re.sub(r"Purslane(?: Tech Pte\.)? Ltd", app_name, license_content, flags=re.IGNORECASE)
+    license_content = re.sub("Purslane Ltd", app_name, license_content, flags=re.IGNORECASE)
     with open(license_file, "w", encoding="utf-8") as f:
         f.write(license_content)
 
@@ -485,4 +542,3 @@ if __name__ == "__main__":
         sys.exit(-1)
 
     replace_app_name_in_langs(args.app_name)
-    replace_app_name_in_custom_actions(args.app_name)

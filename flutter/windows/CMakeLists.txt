@@ -70,6 +70,10 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+if(MSVC AND TARGET flutter_gpu_texture_renderer_plugin)
+  target_compile_options(flutter_gpu_texture_renderer_plugin PRIVATE /FIchrono)
+endif()
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can

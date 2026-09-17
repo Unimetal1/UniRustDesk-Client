@@ -3,7 +3,6 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:extended_text/extended_text.dart';
-import 'package:flutter_hbb/common/widgets/dialog.dart';
 import 'package:flutter_hbb/desktop/widgets/dragable_divider.dart';
 import 'package:percent_indicator/percent_indicator.dart';
 import 'package:desktop_drop/desktop_drop.dart';
@@ -17,6 +16,7 @@ import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
 import 'package:flutter_hbb/models/file_model.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:get/get.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter_hbb/web/dummy.dart'
     if (dart.library.html) 'package:flutter_hbb/web/web_unique.dart';
 
@@ -52,7 +52,7 @@ enum MouseFocusScope {
 }
 
 class FileManagerPage extends StatefulWidget {
-  FileManagerPage(
+  const FileManagerPage(
       {Key? key,
       required this.id,
       required this.password,
@@ -67,16 +67,9 @@ class FileManagerPage extends StatefulWidget {
   final bool? forceRelay;
   final String? connToken;
   final DesktopTabController? tabController;
-  final SimpleWrapper<State<FileManagerPage>?> _lastState = SimpleWrapper(null);
-
-  FFI get ffi => (_lastState.value! as _FileManagerPageState)._ffi;
 
   @override
-  State<StatefulWidget> createState() {
-    final state = _FileManagerPageState();
-    _lastState.value = state;
-    return state;
-  }
+  State<StatefulWidget> createState() => _FileManagerPageState();
 }
 
 class _FileManagerPageState extends State<FileManagerPage>
@@ -85,7 +78,6 @@ class _FileManagerPageState extends State<FileManagerPage>
 
   final _dropMaskVisible = false.obs; // TODO impl drop mask
   final _overlayKeyState = OverlayKeyState();
-  final _uniqueKey = UniqueKey();
 
   late FFI _ffi;
 
@@ -107,7 +99,9 @@ class _FileManagerPageState extends State<FileManagerPage>
           .showLoading(translate('Connecting...'), onCancel: closeConnection);
     });
     Get.put<FFI>(_ffi, tag: 'ft_${widget.id}');
-    WakelockManager.enable(_uniqueKey);
+    if (!isLinux) {
+      WakelockPlus.enable();
+    }
     if (isWeb) {
       _ffi.ffiModel.updateEventListener(_ffi.sessionId, widget.id);
     }
@@ -125,7 +119,9 @@ class _FileManagerPageState extends State<FileManagerPage>
     model.close().whenComplete(() {
       _ffi.close();
       _ffi.dialogManager.dismissAll();
-      WakelockManager.disable(_uniqueKey);
+      if (!isLinux) {
+        WakelockPlus.disable();
+      }
       Get.delete<FFI>(tag: 'ft_${widget.id}');
     });
     WidgetsBinding.instance.removeObserver(this);
@@ -143,26 +139,12 @@ class _FileManagerPageState extends State<FileManagerPage>
     }
   }
 
-  Widget willPopScope(Widget child) {
-    if (isWeb) {
-      return WillPopScope(
-        onWillPop: () async {
-          clientClose(_ffi.sessionId, _ffi);
-          return false;
-        },
-        child: child,
-      );
-    } else {
-      return child;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     super.build(context);
     return Overlay(key: _overlayKeyState.key, initialEntries: [
       OverlayEntry(builder: (_) {
-        return willPopScope(Scaffold(
+        return Scaffold(
           backgroundColor: Theme.of(context).scaffoldBackgroundColor,
           body: Row(
             children: [
@@ -178,7 +160,7 @@ class _FileManagerPageState extends State<FileManagerPage>
               Flexible(flex: 2, child: statusList())
             ],
           ),
-        ));
+        );
       })
     ]);
   }
@@ -278,9 +260,11 @@ class _FileManagerPageState extends State<FileManagerPage>
                                     item.state != JobState.inProgress,
                                 child: LinearPercentIndicator(
                                   animateFromLastPercent: true,
-                                  center: Text(item.percentText),
+                                  center: Text(
+                                    '${(item.finishedSize / item.totalSize * 100).toStringAsFixed(0)}%',
+                                  ),
                                   barRadius: Radius.circular(15),
-                                  percent: item.percent,
+                                  percent: item.finishedSize / item.totalSize,
                                   progressColor: MyTheme.accent,
                                   backgroundColor: Theme.of(context).hoverColor,
                                   lineHeight: kDesktopFileTransferRowHeight,

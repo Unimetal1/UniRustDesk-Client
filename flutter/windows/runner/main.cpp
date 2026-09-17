@@ -7,14 +7,12 @@
 #include <algorithm>
 #include <iostream>
 
-#include "win32_desktop.h"
 #include "flutter_window.h"
 #include "utils.h"
 
 typedef char** (*FUNC_RUSTDESK_CORE_MAIN)(int*);
 typedef void (*FUNC_RUSTDESK_FREE_ARGS)( char**, int);
 typedef int (*FUNC_RUSTDESK_GET_APP_NAME)(wchar_t*, int);
-typedef int (*FUNC_RUSTDESK_IS_DISABLE_INSTALLATION)();
 /// Note: `--server`, `--service` are already handled in [core_main.rs].
 const std::vector<std::string> parameters_white_list = {"--install", "--cm"};
 
@@ -63,22 +61,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
   std::vector<std::string> rust_args(c_args, c_args + args_len);
   free_c_args(c_args, args_len);
-  FUNC_RUSTDESK_IS_DISABLE_INSTALLATION rustdesk_is_disable_installation =
-      (FUNC_RUSTDESK_IS_DISABLE_INSTALLATION)GetProcAddress(hInstance, "rustdesk_is_disable_installation");
-  bool is_disable_installation =
-      rustdesk_is_disable_installation && rustdesk_is_disable_installation() != 0;
-  const auto installParam = std::string("--install");
-  // Flutter reads the original process command line, not only rust_args, so
-  // remove the `--install` injected by the portable wrapper here as well. This
-  // also lets `no-install.exe` continue as a portable app when installation is
-  // disabled. See: https://github.com/rustdesk/rustdesk-server-pro/issues/991#issuecomment-4978376890
-  if (is_disable_installation) {
-    command_line_arguments.erase(
-        std::remove(command_line_arguments.begin(),
-                    command_line_arguments.end(),
-                    installParam),
-        command_line_arguments.end());
-  }
 
   std::wstring app_name = L"RustDesk";
   FUNC_RUSTDESK_GET_APP_NAME get_rustdesk_app_name = (FUNC_RUSTDESK_GET_APP_NAME)GetProcAddress(hInstance, "get_rustdesk_app_name");
@@ -135,6 +117,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     is_cm_page = true;
   }
   bool is_install_page = false;
+  auto installParam = std::string("--install");
   if (!command_line_arguments.empty() && command_line_arguments.front().compare(0, installParam.size(), installParam.c_str()) == 0) {
     is_install_page = true;
   }
@@ -143,22 +126,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
-
-  // Get primary monitor's work area.
-  Win32Window::Point workarea_origin(0, 0);
-  Win32Window::Size workarea_size(0, 0);
-
-  Win32Desktop::GetWorkArea(workarea_origin, workarea_size);
-
-  // Compute window bounds for default main window position: (10, 10) x(800, 600)
-  Win32Window::Point relative_origin(10, 10);
-
-  Win32Window::Point origin(workarea_origin.x + relative_origin.x, workarea_origin.y + relative_origin.y);
-  Win32Window::Size size(800u, 600u);
-
-  // Fit the window to the monitor's work area.
-  Win32Desktop::FitToWorkArea(origin, size);
-
+  Win32Window::Point origin(10, 10);
+  Win32Window::Size size(800, 600);
   std::wstring window_title;
   if (is_cm_page) {
     window_title = app_name + L" - Connection Manager";

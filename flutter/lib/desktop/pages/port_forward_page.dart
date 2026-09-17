@@ -25,7 +25,7 @@ class _PortForward {
 }
 
 class PortForwardPage extends StatefulWidget {
-  PortForwardPage({
+  const PortForwardPage({
     Key? key,
     required this.id,
     required this.password,
@@ -42,16 +42,9 @@ class PortForwardPage extends StatefulWidget {
   final bool? forceRelay;
   final bool? isSharedPassword;
   final String? connToken;
-  final SimpleWrapper<State<PortForwardPage>?> _lastState = SimpleWrapper(null);
-
-  FFI get ffi => (_lastState.value! as _PortForwardPageState)._ffi;
 
   @override
-  State<PortForwardPage> createState() {
-    final state = _PortForwardPageState();
-    _lastState.value = state;
-    return state;
-  }
+  State<PortForwardPage> createState() => _PortForwardPageState();
 }
 
 class _PortForwardPageState extends State<PortForwardPage>

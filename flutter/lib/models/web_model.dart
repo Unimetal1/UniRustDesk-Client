@@ -2,41 +2,19 @@
 
 import 'dart:convert';
 import 'dart:js_interop';
-import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 import 'dart:js';
 import 'dart:html';
 import 'dart:async';
-import 'dart:ui' as ui;
-import 'dart:ui_web' as ui_web;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_hbb/common/widgets/login.dart';
 import 'package:flutter_hbb/models/state_model.dart';
-import 'package:flutter_hbb/models/web_video_frame_queue.dart';
 
 import 'package:flutter_hbb/web/bridge.dart';
 import 'package:flutter_hbb/common.dart';
-import 'package:uuid/uuid.dart';
 
 final List<StreamSubscription<MouseEvent>> mouseListeners = [];
 final List<StreamSubscription<KeyboardEvent>> keyListeners = [];
-
-// WebCodecs VideoFrames handed over from js/src/webcodecs.js arrive as plain
-// interop objects (the package language version predates extension types).
-// This side owns each frame and must close it quickly: hardware decoders
-// stall once their small output frame pool is exhausted.
-int _videoFrameWidth(JSObject frame) =>
-    frame.getProperty<JSNumber>('displayWidth'.toJS).toDartInt;
-int _videoFrameHeight(JSObject frame) =>
-    frame.getProperty<JSNumber>('displayHeight'.toJS).toDartInt;
-void _closeVideoFrame(JSObject frame) {
-  try {
-    frame.callMethod<JSAny?>('close'.toJS);
-  } catch (error) {
-    debugPrint('VideoFrame.close failed: $error');
-  }
-}
 
 typedef HandleEvent = Future<void> Function(Map<String, dynamic> evt);
 
@@ -53,13 +31,6 @@ class PlatformFFI {
   }
 
   PlatformFFI._() {
-    _videoFrameQueue = WebVideoFrameQueue(
-      importFrame: _importVideoFrame,
-      closeFrame: _closeVideoFrame,
-      disposeImage: (image) => image.dispose(),
-      onImportError: _handleVideoFrameImportError,
-      onCallbackError: _handleVideoImageCallbackError,
-    );
     window.document.addEventListener(
         'visibilitychange',
         (event) => {
@@ -78,15 +49,14 @@ class PlatformFFI {
   }
 
   bool registerEventHandler(
-      String eventName, String handlerName, HandleEvent handler,
-      {bool replace = false}) {
+      String eventName, String handlerName, HandleEvent handler) {
     debugPrint('registerEventHandler $eventName $handlerName');
     var handlers = _eventHandlers[eventName];
     if (handlers == null) {
       _eventHandlers[eventName] = {handlerName: handler};
       return true;
     } else {
-      if (!replace && handlers.containsKey(handlerName)) {
+      if (handlers.containsKey(handlerName)) {
         return false;
       } else {
         handlers[handlerName] = handler;
@@ -142,17 +112,6 @@ class PlatformFFI {
     context["onInitFinished"] = () {
       completer.complete();
     };
-    context['dialog'] = (type, title, text) {
-      final uuid = Uuid();
-      msgBox(SessionID(uuid.v4()), type, title, text, '', gFFI.dialogManager);
-    };
-    context['loginDialog'] = () {
-      loginDialog();
-    };
-    context['closeConnection'] = () {
-      gFFI.dialogManager.dismissAll();
-      closeConnection();
-    };
     context.callMethod('init');
     version = getByName('version');
     window.onContextMenu.listen((event) {
@@ -187,46 +146,6 @@ class PlatformFFI {
         fun(display, rgba);
       }
     };
-  }
-
-  late final WebVideoFrameQueue<JSObject, ui.Image> _videoFrameQueue;
-
-  // Zero-readback video path: the JS decoder hands decoded VideoFrames here
-  // (checking typeof window.onVideoFrame before every frame), and the engine
-  // imports them GPU-to-GPU via createImageBitmap. Unregistering the JS global
-  // reverts the JS side to the RGBA readback path.
-  void setVideoFrameCallback(
-      Future<void> Function(int, ui.Image, bool Function()) fun) {
-    _videoFrameQueue.beginSession(fun);
-    if (!_videoFrameQueue.isEnabled) return;
-    globalContext.setProperty(
-      'onVideoFrame'.toJS,
-      ((JSNumber display, JSObject frame) {
-        _videoFrameQueue.submit(display.toDartInt, frame);
-      }).toJS,
-    );
-  }
-
-  void clearVideoFrameCallback() {
-    _videoFrameQueue.endSession();
-    globalContext.setProperty('onVideoFrame'.toJS, null);
-  }
-
-  Future<ui.Image> _importVideoFrame(JSObject frame) async {
-    return await ui_web.createImageFromTextureSource(frame,
-        width: _videoFrameWidth(frame), height: _videoFrameHeight(frame));
-  }
-
-  void _handleVideoFrameImportError(Object error, StackTrace stackTrace) {
-    debugPrintStack(
-        label: 'createImageFromTextureSource failed, using RGBA path: $error',
-        stackTrace: stackTrace);
-    globalContext.setProperty('onVideoFrame'.toJS, null);
-  }
-
-  void _handleVideoImageCallbackError(Object error, StackTrace stackTrace) {
-    debugPrintStack(
-        label: 'video image callback error: $error', stackTrace: stackTrace);
   }
 
   void startDesktopWebListener() {

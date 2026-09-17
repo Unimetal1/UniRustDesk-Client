@@ -50,7 +50,6 @@ class DraggableChatWindow extends StatelessWidget {
           )
         : Draggable(
             checkKeyboard: true,
-            checkScreenSize: true,
             position: draggablePositions.chatWindow,
             width: width,
             height: height,
@@ -396,10 +395,7 @@ class _DraggableState extends State<Draggable> {
     _chatModel?.setChatWindowPosition(position);
   }
 
-  checkScreenSize() {
-    // Ensure the draggable always stays within current screen bounds
-    widget.position.tryAdjust(widget.width, widget.height, 1);
-  }
+  checkScreenSize() {}
 
   checkKeyboard() {
     final bottomHeight = MediaQuery.of(context).viewInsets.bottom;
@@ -519,12 +515,6 @@ class IOSDraggableState extends State<IOSDraggable> {
 
     _keyboardVisible = currentVisible;
     _lastBottomHeight = bottomHeight;
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    position.tryAdjust(_width, _height, 1);
   }
 
   @override

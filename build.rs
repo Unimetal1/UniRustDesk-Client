@@ -18,7 +18,7 @@ fn build_mac() {
             b.flag("-DNO_InputMonitoringAuthStatus=1");
         }
     }
-    b.flag("-std=c++17").file(file).compile("macos");
+    b.file(file).compile("macos");
     println!("cargo:rerun-if-changed={}", file);
 }
 
@@ -68,10 +68,14 @@ fn install_android_deps() {
     }
     path.push(target);
     println!(
-        "cargo:rustc-link-search={}",
-        path.join("lib").to_str().unwrap()
+        "{}",
+        format!(
+            "cargo:rustc-link-search={}",
+            path.join("lib").to_str().unwrap()
+        )
     );
     println!("cargo:rustc-link-lib=ndk_compat");
+    println!("cargo:rustc-link-lib=oboe");
     println!("cargo:rustc-link-lib=c++");
     println!("cargo:rustc-link-lib=OpenSLES");
 }

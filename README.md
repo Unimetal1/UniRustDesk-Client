@@ -1,6 +1,6 @@
-# Pomoc Zdalna — klient
+# SerwisOnline (ServisOnline) — klient
 
-**Pomoc Zdalna to zmodyfikowana wersja RustDesk 1.3.6 (AGPL-3.0). Nie jest oficjalnym produktem RustDesk.**
+**SerwisOnline to zmodyfikowana wersja RustDesk 1.3.6 (AGPL-3.0). Nie jest oficjalnym produktem RustDesk.**
 
 Zmiany: uwierzytelnianie techników certyfikatem Windows CNG, wbudowany adres
 i klucz publiczny serwera, dodatkowe szyfrowanie transportu i sesji, komunikaty
@@ -16,13 +16,13 @@ certyfikatów po polsku i angielsku oraz poprawka przechwytywania ekranu DXGI �
 Prawa autorskie Purslane Ltd. i pozostałych autorów RustDesk zostały zachowane.
 Nazwa i logo RustDesk należą do ich właścicieli.
 
-*Pomoc Zdalna is a modified version of RustDesk 1.3.6 (AGPL-3.0) with Windows CNG
+*ServisOnline is a modified version of RustDesk 1.3.6 (AGPL-3.0) with Windows CNG
 certificate authentication. It is not an official RustDesk product.*
 
 ---
 
 > Poniżej oryginalny opis projektu RustDesk. Linki do pobierania, darowizn
-> i społeczności prowadzą do oryginalnego projektu, nie do Pomocy Zdalnej.
+> i społeczności prowadzą do oryginalnego projektu, nie do SerwisOnline.
 
 <p align="center">
   <img src="res/logo-header.svg" alt="RustDesk - Your remote desktop"><br>
